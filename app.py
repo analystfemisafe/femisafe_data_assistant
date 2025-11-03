@@ -3,11 +3,12 @@ import pandas as pd
 import psycopg2
 import numpy as np
 
-# LangChain imports (v1.0+)
+# LangChain imports
 from langchain_community.utilities import SQLDatabase
 from langchain_community.llms import Ollama
-from langchain.chains.sql_database.query import create_sql_query_chain
+from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+
 
 
 
