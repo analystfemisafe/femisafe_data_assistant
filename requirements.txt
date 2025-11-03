@@ -1,9 +1,11 @@
 streamlit
-langchain
+langchain>=0.2.0
 langchain-core
 langchain-community
 langchain-experimental
+langchain-openai
 sqlalchemy
 psycopg2-binary
 pandas
 plotly
+google-generativeai
