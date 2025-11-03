@@ -5,7 +5,7 @@ import numpy as np
 
 # LangChain imports
 from langchain_community.utilities import SQLDatabase
-from langchain_community.llms import Ollama
+#from langchain_community.llms import Ollama
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
@@ -737,7 +737,9 @@ elif main_choice == "Data Query":
     db = SQLDatabase.from_uri("postgresql://ayish:ajtp%40511Db@localhost:5432/femisafe_test_db")
 
     # Step 2: Load Ollama (local Llama3)
-    llm = Ollama(model="llama3")
+    from langchain_openai import ChatOpenAI
+    llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=st.secrets["OPENAI_API_KEY"])
+
 
     # Step 3: Define a strict SQL-only prompt
     from langchain.prompts import ChatPromptTemplate
