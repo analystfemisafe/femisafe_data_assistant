@@ -1,0 +1,9 @@
+streamlit
+langchain
+langchain-core
+langchain-community
+langchain-experimental
+sqlalchemy
+psycopg2-binary
+pandas
+plotly
