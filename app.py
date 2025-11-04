@@ -154,6 +154,7 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
         # ===================== Chart Section =====================
         import psycopg2
         import plotly.graph_objects as go
+        import pandas as pd
 
         # ✅ Establish connection inside the same block
         conn = psycopg2.connect(
@@ -168,8 +169,23 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
         df_sales = pd.read_sql("SELECT * FROM femisafe_sales", conn)
         conn.close()  # ✅ Close after use
 
-        # Convert order_date to datetime if not already
-        df_sales['order_date'] = pd.to_datetime(df_sales['order_date'])
+        # Ensure order_date is datetime
+        df_sales.columns = df_sales.columns.str.strip().str.lower()
+        df_sales['order_date'] = pd.to_datetime(df_sales['order_date'], errors='coerce')
+
+        # 🔹 Find latest month in data
+        latest_date = df_sales['order_date'].max()
+        latest_month = latest_date.month
+
+        # 🔹 Keep only data from April to latest month (of same FY)
+        if latest_month >= 4:
+            df_sales = df_sales[df_sales['order_date'].dt.month.between(4, latest_month)]
+        else:
+            # Edge case if latest month is Jan–Mar (wrap around FY)
+            df_sales = df_sales[
+                (df_sales['order_date'].dt.month >= 4) |
+                (df_sales['order_date'].dt.month <= latest_month)
+            ]
 
         # Group by month
         df_monthly = df_sales.groupby('month', as_index=False).agg({
@@ -177,9 +193,18 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
             'sku_units': 'sum'
         })
 
-        # 🔹 Reorder months April → March
-        month_order = ['April', 'May', 'June', 'July', 'August', 'September',
-                       'October', 'November', 'December', 'January', 'February', 'March']
+        # 🔹 Create proper month order list dynamically
+        month_map = {
+            1: 'January', 2: 'February', 3: 'March', 4: 'April',
+            5: 'May', 6: 'June', 7: 'July', 8: 'August',
+            9: 'September', 10: 'October', 11: 'November', 12: 'December'
+        }
+
+        if latest_month >= 4:
+            month_order = [month_map[m] for m in range(4, latest_month + 1)]
+        else:
+            month_order = [month_map[m] for m in range(4, 13)] + [month_map[m] for m in range(1, latest_month + 1)]
+
         df_monthly['month'] = pd.Categorical(df_monthly['month'], categories=month_order, ordered=True)
         df_monthly = df_monthly.sort_values('month')
 
@@ -207,7 +232,7 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
 
         fig.update_layout(
             title=dict(
-                text="📊 Overall Sales Overview (Month-wise, Apr–Mar)",
+                text=f"📊 Overall Sales Overview (Month-wise, Apr–{month_map[latest_month]})",
                 font=dict(color="black", size=18)
             ),
             xaxis=dict(
@@ -215,7 +240,8 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
                 tickfont=dict(color="black"),
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
-                gridwidth=0.5
+                gridwidth=0.5,
+                type='category'
             ),
             yaxis=dict(
                 title=dict(text="Net Sales (INR)", font=dict(color="purple")),
@@ -243,13 +269,35 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
             height=400,
             margin=dict(l=50, r=50, t=50, b=50),
             plot_bgcolor="white",
-            paper_bgcolor="white"
+            paper_bgcolor="white",
+
+            # ✅ Unified hover, with one month label
+            hovermode="x unified",
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=13,
+                font_color="black"
+            )
         )
+
+        # ✅ Simplify individual traces’ hover text (remove duplicate month label)
+        fig.update_traces(
+            hovertemplate="%{y:,.0f} %{meta}<extra></extra>",
+            selector=dict(name="Net Sales (in INR)"),
+            meta="INR"
+        )
+        fig.update_traces(
+            hovertemplate="%{y:,} %{meta}<extra></extra>",
+            selector=dict(name="Net Sales (in Units)"),
+            meta="units"
+)
+
 
         st.plotly_chart(fig, use_container_width=True)
 
-    
-# =================//OVERALL DASHBOARD=====================
+
+        # =================//OVERALL DASHBOARD=====================
+
 
 elif main_choice == "Blinkit":
     st.markdown("<div class='sidebar-title'>Blinkit Sales Overview", unsafe_allow_html=True)
@@ -318,27 +366,18 @@ elif main_choice == "Blinkit":
         with col2:
             st.markdown(f"""
             <div style="{card_style}">
-                <p style="{number_style}">₹{total_revenue:,.0f}</p>
-                <p style="{units_style}">{int(total_units):,} units</p>
-                <p style="{label_style}">Total Revenue (All Months)</p>
+                <p style="{number_style}">{int(total_units):,}</p>     <!-- 🔹 Removed ₹ sign -->
+                <p style="{units_style}">units</p>                     <!-- 🔹 Moved "units" to its own line -->
+                <p style="{label_style}">Total Units Sold (All Months)</p>  <!-- 🔹 Updated label -->
             </div>
             """, unsafe_allow_html=True)
+
 
         # ===================== Chart Section =====================
         import plotly.graph_objects as go
 
-        # Ensure order_date is datetime
-        df_blinkit['order_date'] = pd.to_datetime(df_blinkit['order_date'], errors='coerce')
-
-        # 🔹 Keep only current year data (e.g., 2025)
-        current_year = df_blinkit['order_date'].max().year
-        df_blinkit = df_blinkit[df_blinkit['order_date'].dt.year == current_year]
-
-        # 🔹 Find the latest available date (for example, Sept 30, 2025)
-        latest_date = df_blinkit['order_date'].max()
-
-        # 🔹 Filter last 30 days *within the current year only*
-        df_blinkit_30 = df_blinkit[df_blinkit['order_date'] >= (latest_date - pd.Timedelta(days=30))]
+        # Filter last 30 days
+        df_blinkit_30 = df_blinkit[df_blinkit['order_date'] >= (df_blinkit['order_date'].max() - pd.Timedelta(days=30))]
 
         # Group by date
         df_daily = df_blinkit_30.groupby('order_date', as_index=False).agg({
@@ -353,29 +392,31 @@ elif main_choice == "Blinkit":
         fig.add_trace(go.Scatter(
             x=df_daily['order_date'],
             y=df_daily['net_revenue'],
-            mode='lines',
-            name='Net Sales (in INR)',
+            mode='lines+markers',
+            name='Revenue (INR)',
             line=dict(color='purple', width=3, shape='spline'),
-            hovertemplate='%{x|%d %b}<br>Sales (₹): %{y:,.0f}<extra></extra>'
+            hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'  # ✅ No date here
         ))
 
         # Units line (right axis)
         fig.add_trace(go.Scatter(
             x=df_daily['order_date'],
             y=df_daily['quantity'],
-            mode='lines',
-            name='Net Sales (in Units)',
+            mode='lines+markers',
+            name='Units Sold',
             line=dict(color='green', width=3, shape='spline'),
             yaxis='y2',
-            hovertemplate='%{x|%d %b}<br>Units Sold: %{y:,}<extra></extra>'
+            hovertemplate='Units: %{y:,} units<extra></extra>'  # ✅ No date here
         ))
 
+        # Layout and styling
         fig.update_layout(
             title=dict(
-                text="📈 Blinkit Sales (Last 30 Days — Till Latest Available Date)",
+                text="📈 Blinkit Sales (Last 30 Days)",
                 font=dict(color="black", size=18)
             ),
             xaxis=dict(
+                title="Date",
                 tickfont=dict(color="black"),
                 showgrid=True,
                 gridcolor="rgba(200, 200, 200, 0.3)",
@@ -391,10 +432,9 @@ elif main_choice == "Blinkit":
             yaxis2=dict(
                 title=dict(text="No. of Units Sold", font=dict(color="green")),
                 tickfont=dict(color="green"),
-                showgrid=True,
-                gridcolor="rgba(200, 200, 200, 0.3)",
                 overlaying="y",
-                side="right"
+                side="right",
+                showgrid=False
             ),
             legend=dict(
                 orientation="h",
@@ -409,10 +449,14 @@ elif main_choice == "Blinkit":
             height=400,
             margin=dict(l=50, r=50, t=50, b=50),
             plot_bgcolor="white",
-            paper_bgcolor="white"
+            paper_bgcolor="white",
+
+            # ✅ Unified hover mode (only one date displayed)
+            hovermode='x unified'
         )
 
         st.plotly_chart(fig, use_container_width=True)
+
 
     ###########################SKUWISE SALES REPORT#####################################
     elif sub_choice == "SKU Sales Report":
@@ -911,7 +955,170 @@ elif main_choice == "Blinkit":
                 .applymap(highlight_growth, subset=[('Delta', 'Growth %')]),
             use_container_width=True
         )
-#########################//CITYWISE SALES REPORT###############
+    #########################//CITYWISE SALES REPORT###############
+    # ===================== BLINKIT AD REPORT =====================
+    elif sub_choice == "Ad Report":
+        st.markdown("### 📊 Blinkit Ad Data Overview")
+
+        import pandas as pd
+        import psycopg2
+
+        @st.cache_data(ttl=600)
+        def get_blinkit_addata():
+            """Fetch Blinkit Ad Data from the database"""
+            conn = psycopg2.connect(
+                host="localhost",
+                database="femisafe_test_db",
+                user="ayish",
+                password="ajtp@511Db"  # replace with your actual DB password
+            )
+            query = "SELECT * FROM femisafe_blinkit_addata;"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df
+
+        @st.cache_data(ttl=600)
+        def get_blinkit_data():
+            """Fetch Blinkit Sales Data from the database"""
+            conn = psycopg2.connect(
+                host="localhost",
+                database="femisafe_test_db",
+                user="ayish",
+                password="ajtp@511Db"
+            )
+            query = "SELECT * FROM femisafe_blinkit_salesdata;"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            return df
+
+        # ===================== Card Styling =====================
+        card_style = """
+            background-color: #3a3a3a;
+            color: white;
+            padding: 25px 10px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            width: 100%;
+        """
+        number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
+        label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
+        units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.markdown(f"""
+            <div style="{card_style}">
+                <p style="{number_style}">₹0</p>
+                <p style="{units_style}">Latest Month Spend</p>
+                <p style="{label_style}">Budget Consumed</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col2:
+            st.markdown(f"""
+            <div style="{card_style}">
+                <p style="{number_style}">₹0</p>
+                <p style="{units_style}">Total Spend</p>
+                <p style="{label_style}">Overall Budget Used</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col3:
+            st.markdown(f"""
+            <div style="{card_style}">
+                <p style="{number_style}">0.0×</p>
+                <p style="{units_style}">Average ROAS</p>
+                <p style="{label_style}">All Campaigns</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ===================== Load Data =====================
+        df_ad = get_blinkit_addata()
+        df_sales = get_blinkit_data()
+
+        df_ad['date'] = pd.to_datetime(df_ad['date'], errors='coerce')
+        df_sales['order_date'] = pd.to_datetime(df_sales['order_date'], errors='coerce')
+
+        # ===================== Prepare Dates =====================
+        latest_date = df_ad['date'].max()
+        prev_date = latest_date - pd.Timedelta(days=1)
+
+        df_ad_last2 = df_ad[df_ad['date'].isin([latest_date, prev_date])]
+        df_sales_last2 = df_sales[df_sales['order_date'].isin([latest_date, prev_date])]
+
+        # ===================== Aggregate =====================
+        ad_summary = df_ad_last2.groupby(['product_name', 'date']).agg({
+            'estimated_budget_consumed': 'sum',
+            'direct_sales': 'sum'
+        }).reset_index()
+
+        sales_summary = df_sales_last2.groupby(['product', 'order_date']).agg({
+            'total_gross_bill_amount': 'sum'
+        }).reset_index().rename(columns={
+            'order_date': 'date',
+            'total_gross_bill_amount': 'gross_sales'
+        })
+
+        # ===================== Merge =====================
+        merged = pd.merge(ad_summary, sales_summary, left_on=['product_name', 'date'], right_on=['product', 'date'], how='left')
+
+        # ===================== ROAS Calculations =====================
+        merged['direct_roas'] = merged['direct_sales'] / merged['estimated_budget_consumed']
+        merged['roas'] = merged['gross_sales'] / merged['estimated_budget_consumed']
+
+        # ===================== Pivot =====================
+        pivot = merged.pivot(index='product_name', columns='date', values=[
+            'estimated_budget_consumed', 'direct_sales', 'gross_sales', 'direct_roas', 'roas'
+        ])
+
+        pivot.columns = [f"{col[0]}_{col[1].strftime('%b %d')}" for col in pivot.columns]
+        pivot = pivot.reset_index()
+
+        # ===================== Growth % =====================
+        pivot['Gross_Sales_Growth_%'] = (
+            (pivot[f'gross_sales_{latest_date.strftime("%b %d")}'] -
+            pivot[f'gross_sales_{prev_date.strftime("%b %d")}']) /
+            pivot[f'gross_sales_{prev_date.strftime("%b %d")}'] * 100
+        )
+
+        pivot['Ad_Spend_Growth_%'] = (
+            (pivot[f'estimated_budget_consumed_{latest_date.strftime("%b %d")}'] -
+            pivot[f'estimated_budget_consumed_{prev_date.strftime("%b %d")}']) /
+            pivot[f'estimated_budget_consumed_{prev_date.strftime("%b %d")}'] * 100
+        )
+
+        # ===================== Sort =====================
+        pivot = pivot.sort_values(by=f'gross_sales_{latest_date.strftime("%b %d")}', ascending=False)
+
+        # ===================== Display =====================
+        def color_growth(val):
+            if pd.isna(val):
+                return ''
+            color = 'green' if val > 0 else 'red'
+            return f'color: {color}; font-weight: bold;'
+
+        st.dataframe(
+            pivot.style
+            .format({
+                f'estimated_budget_consumed_{prev_date.strftime("%b %d")}': '₹{:.2f}',
+                f'estimated_budget_consumed_{latest_date.strftime("%b %d")}': '₹{:.2f}',
+                f'direct_sales_{prev_date.strftime("%b %d")}': '₹{:.2f}',
+                f'direct_sales_{latest_date.strftime("%b %d")}': '₹{:.2f}',
+                f'gross_sales_{prev_date.strftime("%b %d")}': '₹{:.2f}',
+                f'gross_sales_{latest_date.strftime("%b %d")}': '₹{:.2f}',
+                f'direct_roas_{prev_date.strftime("%b %d")}': '{:.2f}',
+                f'direct_roas_{latest_date.strftime("%b %d")}': '{:.2f}',
+                f'roas_{prev_date.strftime("%b %d")}': '{:.2f}',
+                f'roas_{latest_date.strftime("%b %d")}': '{:.2f}',
+                'Gross_Sales_Growth_%': '{:+.2f}%',
+                'Ad_Spend_Growth_%': '{:+.2f}%'
+            })
+            .applymap(color_growth, subset=['Gross_Sales_Growth_%', 'Ad_Spend_Growth_%'])
+        )
+
+    # ===================== //BLINKIT AD REPORT =====================
 
 
 
