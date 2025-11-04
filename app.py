@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import psycopg2
 import numpy as np
-
+from langchain_ollama import ChatOllama
 # LangChain imports
 from langchain_community.utilities import SQLDatabase
 #from langchain_community.llms import Ollama
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 
@@ -51,7 +51,7 @@ sub_choice = None
 
 if main_choice == "Overall Dashboards":
     st.sidebar.subheader("Sections")
-    sub_choice = st.sidebar.selectbox("Select Dashboard", ["Overall Sales Overview", "Performance Trends", "Category Split"])
+    sub_choice = st.sidebar.selectbox("Select Dashboard", ["Overall Sales Overview", "Statewise Trends", "Channelwise Trends"])
 
 elif main_choice == "Amazon":
     st.sidebar.subheader("Reports")
@@ -150,6 +150,105 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
                 <p style="{label_style}">Total Revenue (All Months)</p>
             </div>
             """, unsafe_allow_html=True)
+
+        # ===================== Chart Section =====================
+        import psycopg2
+        import plotly.graph_objects as go
+
+        # ✅ Establish connection inside the same block
+        conn = psycopg2.connect(
+            dbname="femisafe_test_db",
+            user="ayish",
+            password="ajtp@511Db",
+            host="localhost",
+            port="5432"
+        )
+
+        # Fetch fresh data for chart
+        df_sales = pd.read_sql("SELECT * FROM femisafe_sales", conn)
+        conn.close()  # ✅ Close after use
+
+        # Convert order_date to datetime if not already
+        df_sales['order_date'] = pd.to_datetime(df_sales['order_date'])
+
+        # Group by month
+        df_monthly = df_sales.groupby('month', as_index=False).agg({
+            'revenue': 'sum',
+            'sku_units': 'sum'
+        })
+
+        # 🔹 Reorder months April → March
+        month_order = ['April', 'May', 'June', 'July', 'August', 'September',
+                       'October', 'November', 'December', 'January', 'February', 'March']
+        df_monthly['month'] = pd.Categorical(df_monthly['month'], categories=month_order, ordered=True)
+        df_monthly = df_monthly.sort_values('month')
+
+        # Plotly chart
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatter(
+            x=df_monthly['month'],
+            y=df_monthly['revenue'],
+            mode='lines+markers',
+            name='Net Sales (in INR)',
+            line=dict(color='purple', width=3, shape='spline'),
+            hovertemplate='%{x}<br>Sales (₹): %{y:,.0f}<extra></extra>'
+        ))
+
+        fig.add_trace(go.Scatter(
+            x=df_monthly['month'],
+            y=df_monthly['sku_units'],
+            mode='lines+markers',
+            name='Net Sales (in Units)',
+            line=dict(color='green', width=3, shape='spline'),
+            yaxis='y2',
+            hovertemplate='%{x}<br>Units Sold: %{y:,}<extra></extra>'
+        ))
+
+        fig.update_layout(
+            title=dict(
+                text="📊 Overall Sales Overview (Month-wise, Apr–Mar)",
+                font=dict(color="black", size=18)
+            ),
+            xaxis=dict(
+                title="Month",
+                tickfont=dict(color="black"),
+                showgrid=True,
+                gridcolor="rgba(200, 200, 200, 0.3)",
+                gridwidth=0.5
+            ),
+            yaxis=dict(
+                title=dict(text="Net Sales (INR)", font=dict(color="purple")),
+                tickfont=dict(color="purple"),
+                showgrid=True,
+                gridcolor="rgba(200, 200, 200, 0.3)",
+                gridwidth=0.5
+            ),
+            yaxis2=dict(
+                title=dict(text="No. of Units Sold", font=dict(color="green")),
+                tickfont=dict(color="green"),
+                overlaying="y",
+                side="right"
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.25,
+                xanchor="center",
+                x=0.5,
+                font=dict(color="black")
+            ),
+            font=dict(color="black"),
+            template="plotly_white",
+            height=400,
+            margin=dict(l=50, r=50, t=50, b=50),
+            plot_bgcolor="white",
+            paper_bgcolor="white"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    
 # =================//OVERALL DASHBOARD=====================
 
 elif main_choice == "Blinkit":
@@ -228,8 +327,18 @@ elif main_choice == "Blinkit":
         # ===================== Chart Section =====================
         import plotly.graph_objects as go
 
-        # Filter last 30 days
-        df_blinkit_30 = df_blinkit[df_blinkit['order_date'] >= (df_blinkit['order_date'].max() - pd.Timedelta(days=30))]
+        # Ensure order_date is datetime
+        df_blinkit['order_date'] = pd.to_datetime(df_blinkit['order_date'], errors='coerce')
+
+        # 🔹 Keep only current year data (e.g., 2025)
+        current_year = df_blinkit['order_date'].max().year
+        df_blinkit = df_blinkit[df_blinkit['order_date'].dt.year == current_year]
+
+        # 🔹 Find the latest available date (for example, Sept 30, 2025)
+        latest_date = df_blinkit['order_date'].max()
+
+        # 🔹 Filter last 30 days *within the current year only*
+        df_blinkit_30 = df_blinkit[df_blinkit['order_date'] >= (latest_date - pd.Timedelta(days=30))]
 
         # Group by date
         df_daily = df_blinkit_30.groupby('order_date', as_index=False).agg({
@@ -240,71 +349,71 @@ elif main_choice == "Blinkit":
         # Plotly chart
         fig = go.Figure()
 
-        # Revenue line (left axis) — smooth curve
+        # Revenue line (left axis)
         fig.add_trace(go.Scatter(
             x=df_daily['order_date'],
             y=df_daily['net_revenue'],
             mode='lines',
             name='Net Sales (in INR)',
-            line=dict(color='purple', width=3, shape='spline'),  # 🔹 Smooth curve
+            line=dict(color='purple', width=3, shape='spline'),
             hovertemplate='%{x|%d %b}<br>Sales (₹): %{y:,.0f}<extra></extra>'
         ))
 
-        # Units line (right axis) — smooth curve
+        # Units line (right axis)
         fig.add_trace(go.Scatter(
             x=df_daily['order_date'],
             y=df_daily['quantity'],
             mode='lines',
             name='Net Sales (in Units)',
-            line=dict(color='green', width=3, shape='spline'),  # 🔹 Smooth curve
+            line=dict(color='green', width=3, shape='spline'),
             yaxis='y2',
             hovertemplate='%{x|%d %b}<br>Units Sold: %{y:,}<extra></extra>'
         ))
 
         fig.update_layout(
-        title=dict(
-            text="📈 Blinkit Sales (Last 30 Days)",
-            font=dict(color="black", size=18)   # ✅ Chart title black
-        ),
-        xaxis=dict(
-            tickfont=dict(color="black"),
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 0.3)",  # light gridlines
-            gridwidth=0.5
-        ),
-        yaxis=dict(
-            title=dict(text="Net Sales (INR)", font=dict(color="purple")),
-            tickfont=dict(color="purple"),
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 3.0)",
-            gridwidth=0.5
-        ),
-
-        yaxis2=dict(
-            title=dict(text="No. of Units Sold", font=dict(color="green")),
-            tickfont=dict(color="green"), 
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 0.3)",  # light gridlines 
-            overlaying="y",
-            side="right"
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.25,
-            xanchor="center",
-            x=0.5,
-            font=dict(color="black")       # ✅ Legend text black
-        ),
-        font=dict(color="black"),          # ✅ All remaining text black (title, axes)
-        template="plotly_white",
-        height=400,
-        margin=dict(l=50, r=50, t=50, b=50),
-        plot_bgcolor="white",              # ✅ Chart area background white
-        paper_bgcolor="white"              # ✅ Outer background white
+            title=dict(
+                text="📈 Blinkit Sales (Last 30 Days — Till Latest Available Date)",
+                font=dict(color="black", size=18)
+            ),
+            xaxis=dict(
+                tickfont=dict(color="black"),
+                showgrid=True,
+                gridcolor="rgba(200, 200, 200, 0.3)",
+                gridwidth=0.5
+            ),
+            yaxis=dict(
+                title=dict(text="Net Sales (INR)", font=dict(color="purple")),
+                tickfont=dict(color="purple"),
+                showgrid=True,
+                gridcolor="rgba(200, 200, 200, 0.3)",
+                gridwidth=0.5
+            ),
+            yaxis2=dict(
+                title=dict(text="No. of Units Sold", font=dict(color="green")),
+                tickfont=dict(color="green"),
+                showgrid=True,
+                gridcolor="rgba(200, 200, 200, 0.3)",
+                overlaying="y",
+                side="right"
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=-0.25,
+                xanchor="center",
+                x=0.5,
+                font=dict(color="black")
+            ),
+            font=dict(color="black"),
+            template="plotly_white",
+            height=400,
+            margin=dict(l=50, r=50, t=50, b=50),
+            plot_bgcolor="white",
+            paper_bgcolor="white"
         )
 
         st.plotly_chart(fig, use_container_width=True)
+
     ###########################SKUWISE SALES REPORT#####################################
     elif sub_choice == "SKU Sales Report":
         st.markdown("### 📦 SKU-wise Sales Report (Last 7 Days Comparison)")
@@ -384,20 +493,80 @@ elif main_choice == "Blinkit":
             if "quantity" in col:
                 final_df[col] = final_df[col].astype(int)
 
-        # =============== SORTING SECTION ===============
-        final_df['sku_total_units'] = final_df.groupby('sku')[f'quantity_{latest_date.strftime("%b%d")}'].transform('sum')
-        final_df['feeder_total_units'] = final_df.groupby(['sku', 'feeder_wh'])[f'quantity_{latest_date.strftime("%b%d")}'].transform('sum')
+        # =============== SORTING: feeder by subtotal desc, sku by units desc ===============
+        latest_q_col = f'quantity_{latest_date.strftime("%b%d")}'  # e.g. 'quantity_Oct29'
 
-        final_df = final_df.sort_values(
-            by=['sku_total_units', 'feeder_total_units'],
-            ascending=[False, False]
-        )
+        # Ensure numeric
+        final_df[latest_q_col] = pd.to_numeric(final_df[latest_q_col], errors='coerce').fillna(0).astype(int)
 
-        final_df = final_df.drop(columns=['sku_total_units', 'feeder_total_units'], errors='ignore')
+        # Identify subtotal rows (where feeder_wh == "<sku> Total" or contains 'Total')
+        is_subtotal = final_df['feeder_wh'].astype(str).str.contains('Total', na=False)
 
-        # =============== GRAND TOTAL (Exclude Subtotal Rows) ===============
-        grand_source = final_df[~final_df['feeder_wh'].str.contains('Total', na=False)]
+        # Source rows: only sku->feeder rows (exclude subtotal)
+        source_rows = final_df[~is_subtotal].copy()
 
+        # 1) SKU totals (sum of latest units) and order SKUs descending by total units
+        sku_totals = source_rows.groupby('sku', dropna=False)[latest_q_col].sum().reset_index()
+        sku_totals = sku_totals.sort_values(by=latest_q_col, ascending=False)
+
+        # 2) Feeder totals inside each SKU — used to sort feeders inside each SKU
+        feeder_totals = source_rows.groupby(['sku', 'feeder_wh'], dropna=False)[latest_q_col].sum().reset_index()
+        feeder_totals = feeder_totals.rename(columns={latest_q_col: f'{latest_q_col}_feeder_total'})
+
+        # 3) Build ordered list: for each SKU (by sku_totals order), append sorted feeders then subtotal
+        ordered_parts = []
+        for sku_name in sku_totals['sku'].tolist():
+            # Rows for this SKU excluding subtotal rows
+            sku_rows = source_rows[source_rows['sku'] == sku_name].copy()
+
+            # Attach feeder_total to allow sorting (merge on feeder_wh)
+            sku_rows = sku_rows.merge(
+                feeder_totals[feeder_totals['sku'] == sku_name][['feeder_wh', f'{latest_q_col}_feeder_total']],
+                on='feeder_wh',
+                how='left'
+            )
+
+            # Sort feeders inside SKU by feeder_total descending
+            sku_rows[f'{latest_q_col}_feeder_total'] = sku_rows[f'{latest_q_col}_feeder_total'].fillna(0).astype(int)
+            sku_rows = sku_rows.sort_values(by=f'{latest_q_col}_feeder_total', ascending=False)
+
+            # Drop helper column
+            sku_rows = sku_rows.drop(columns=[f'{latest_q_col}_feeder_total'], errors='ignore')
+
+            ordered_parts.append(sku_rows)
+
+            # Find subtotal row for this SKU (feeder_wh contains 'Total')
+            subtotal_mask = (final_df['sku'] == sku_name) & final_df['feeder_wh'].astype(str).str.contains('Total', na=False)
+            sku_subtotal = final_df[subtotal_mask].copy()
+
+            # If subtotal exists, append it; else build one
+            if not sku_subtotal.empty:
+                ordered_parts.append(sku_subtotal)
+            else:
+                built = pd.DataFrame({
+                    'sku': [sku_name],
+                    'feeder_wh': [f"{sku_name} Total"],
+                    latest_q_col: [sku_rows[latest_q_col].sum()],
+                })
+                # Add other numeric columns’ sums
+                numeric_cols = [c for c in final_df.columns if isinstance(c, str) and ('quantity_' in c or 'net_revenue_' in c or c in ['Units Delta', 'Revenue Delta'])]
+                for nc in numeric_cols:
+                    built[nc] = [sku_rows[nc].sum() if nc in sku_rows.columns else 0]
+
+                # Growth % calculation
+                d7_col = f'net_revenue_{d7_date.strftime("%b%d")}'
+                dcur_col = f'net_revenue_{latest_date.strftime("%b%d")}'
+                prev = built.get(d7_col, pd.Series([0])).iloc[0]
+                curr = built.get(dcur_col, pd.Series([0])).iloc[0]
+                built['Growth %'] = 0 if prev == 0 else round(((curr - prev) / prev) * 100, 2)
+
+                ordered_parts.append(built)
+
+        # 4) Concatenate ordered parts
+        ordered_df = pd.concat(ordered_parts, ignore_index=True)
+
+        # 5) Grand Total (exclude subtotal rows)
+        grand_source = source_rows
         grand_total = pd.DataFrame({
             'sku': ['Grand Total'],
             'feeder_wh': [''],
@@ -407,14 +576,21 @@ elif main_choice == "Blinkit":
             f'net_revenue_{d1_date.strftime("%b%d")}': [grand_source[f'net_revenue_{d1_date.strftime("%b%d")}'].sum()],
             f'quantity_{latest_date.strftime("%b%d")}': [grand_source[f'quantity_{latest_date.strftime("%b%d")}'].sum()],
             f'net_revenue_{latest_date.strftime("%b%d")}': [grand_source[f'net_revenue_{latest_date.strftime("%b%d")}'].sum()],
-            'Units Delta': [grand_source['Units Delta'].sum()],
-            'Revenue Delta': [grand_source['Revenue Delta'].sum()],
+            'Units Delta': [grand_source['Units Delta'].sum() if 'Units Delta' in grand_source.columns else 0],
+            'Revenue Delta': [grand_source['Revenue Delta'].sum() if 'Revenue Delta' in grand_source.columns else 0],
             'Growth %': [round(
-                ((grand_source[f'net_revenue_{latest_date.strftime("%b%d")}'].sum() - 
+                ((grand_source[f'net_revenue_{latest_date.strftime("%b%d")}'].sum() -
                 grand_source[f'net_revenue_{d7_date.strftime("%b%d")}'].sum()) /
-                grand_source[f'net_revenue_{d7_date.strftime("%b%d")}'].sum()) * 100, 2)]
+                (grand_source[f'net_revenue_{d7_date.strftime("%b%d")}'].sum() if grand_source[f'net_revenue_{d7_date.strftime("%b%d")}'].sum() != 0 else 1)
+                ) * 100, 2)]
         })
-        final_df = pd.concat([final_df, grand_total], ignore_index=True)
+
+        # Ensure same columns
+        for col in final_df.columns:
+            if col not in ordered_df.columns:
+                ordered_df[col] = ""
+        ordered_df = ordered_df[final_df.columns]
+        final_df = pd.concat([ordered_df, grand_total], ignore_index=True)
 
         # =============== FORMATTING ===============
         for c in final_df.columns:
@@ -429,38 +605,39 @@ elif main_choice == "Blinkit":
         def highlight_rows(row):
             feeder_wh_col = ('Feeder WH', '')
             sku_col = ('SKU', '')
-
             row_style = [''] * len(row)
 
-            # Row-level background first
             if 'Total' in str(row.get(feeder_wh_col, '')):
                 row_style = ['background-color: #2e2e2e; color: white; font-weight: bold'] * len(row)
             elif 'Grand Total' in str(row.get(sku_col, '')):
                 row_style = ['background-color: #444; color: white; font-weight: bold'] * len(row)
-
             return row_style
 
 
         def highlight_growth(val):
-            """Cell-level formatter for Growth % only"""
             try:
                 v = float(str(val).replace('%', '').replace('+', '').strip())
                 if v < 0:
-                    return 'background-color: #ffcccc; color: black; font-weight: bold;'  # light red
+                    return 'background-color: #ffcccc; color: black; font-weight: bold;'
                 else:
-                    return 'background-color: #ccffcc; color: black; font-weight: bold;'  # light green
+                    return 'background-color: #ccffcc; color: black; font-weight: bold;'
             except Exception:
                 return ''
 
-        # =============== BUILD MULTI-LEVEL HEADERS ===============
-        from datetime import datetime
 
+        # =============== MULTI-LEVEL HEADERS ===============
+        # Clean duplicates to avoid Styler KeyError
+        final_df = final_df.loc[:, ~final_df.columns.duplicated()].copy()
+        final_df = final_df.reset_index(drop=True)
+
+        # Generate readable date labels
         date_labels = {
             d7_date.strftime("%b%d"): d7_date.strftime("%B %d"),
             d1_date.strftime("%b%d"): d1_date.strftime("%B %d"),
             latest_date.strftime("%b%d"): latest_date.strftime("%B %d"),
         }
 
+        # Define consistent column structure
         multi_columns = pd.MultiIndex.from_tuples([
             ('SKU', ''), 
             ('Feeder WH', ''),
@@ -475,13 +652,22 @@ elif main_choice == "Blinkit":
             ('Delta', 'Growth %')
         ])
 
+        # Ensure DataFrame has the same number of columns as multi_columns
+        final_df = final_df.iloc[:, :len(multi_columns)]
         final_df.columns = multi_columns
+
+        # Optional: verify uniqueness for safety
+        assert final_df.columns.is_unique, "Duplicate columns still present in final_df!"
+
+        # =============== DISPLAY ===============
         st.dataframe(
             final_df.style
                 .apply(highlight_rows, axis=1)
                 .applymap(highlight_growth, subset=[('Delta', 'Growth %')]),
             use_container_width=True
         )
+
+
 #######################///SKUWISE SALES REPORT###################
 ######################CITYWISE SALES REPORT##############################
     elif sub_choice == "City Sales Report":
@@ -737,13 +923,14 @@ elif main_choice == "Data Query":
     db = SQLDatabase.from_uri("postgresql://ayish:ajtp%40511Db@localhost:5432/femisafe_test_db")
 
     # Step 2: Load Ollama (local Llama3)
-    from langchain_openai import ChatOpenAI
-    llm = ChatOpenAI(model="gpt-3.5-turbo", api_key=st.secrets["OPENAI_API_KEY"])
+    from langchain_ollama import ChatOllama
+    llm = ChatOllama(model="llama3")
 
 
     # Step 3: Define a strict SQL-only prompt
-    from langchain.prompts import ChatPromptTemplate
-    from langchain.schema.output_parser import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import StrOutputParser
+
 
     prompt = ChatPromptTemplate.from_template("""
     You are an expert SQL assistant.
