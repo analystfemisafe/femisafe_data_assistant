@@ -10,8 +10,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 
-
-
 # ======================================
 # App Title
 # ======================================
@@ -51,7 +49,7 @@ sub_choice = None
 
 if main_choice == "Overall Dashboards":
     st.sidebar.subheader("Sections")
-    sub_choice = st.sidebar.selectbox("Select Dashboard", ["Overall Sales Overview", "Statewise Trends", "Channelwise Trends"])
+    sub_choice = st.sidebar.selectbox("Select Dashboard", ["Overall Sales Overview", "Statewise Trends", "Product Performance", "Location Overlap"])
 
 elif main_choice == "Amazon":
     st.sidebar.subheader("Reports")
@@ -76,7 +74,7 @@ def get_data():
     conn = psycopg2.connect(
         dbname="femisafe_test_db",
         user="ayish",                      
-        password="YourStrongPassword123",  
+        password="ajtp@511Db",  
         host="localhost",
         port="5432"
     )
@@ -108,12 +106,12 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
         total_revenue = df['revenue'].sum()
         total_units = df['units'].sum()
 
-        # Filter September data
-        sept_data = df[df['month'].str.lower() == 'september']
-        september_revenue = sept_data['revenue'].sum()
-        september_units = sept_data['units'].sum()
+        # Filter October data
+        oct_data = df[df['month'].str.lower() == 'october']
+        october_revenue = oct_data['revenue'].sum()
+        october_units = oct_data['units'].sum()
 
-        month_name = "September"
+        month_name = "October"
         
         # Card styling
         card_style = """
@@ -136,8 +134,8 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
         with col1:
             st.markdown(f"""
             <div style="{card_style}">
-                <p style="{number_style}">₹{september_revenue:,.0f}</p>
-                <p style="{units_style}">{int(september_units):,} units</p>
+                <p style="{number_style}">₹{october_revenue:,.0f}</p>
+                <p style="{units_style}">{int(october_units):,} units</p>
                 <p style="{label_style}">{month_name} Revenue</p>
             </div>
             """, unsafe_allow_html=True)
@@ -296,7 +294,378 @@ if main_choice == "Overall Dashboards" and sub_choice == "Overall Sales Overview
         st.plotly_chart(fig, use_container_width=True)
 
 
-        # =================//OVERALL DASHBOARD=====================
+        # =================//OVERALL sales DASHBOARD=====================
+# ======================================
+# Statewise Trends
+# ======================================
+if main_choice == "Overall Dashboards" and sub_choice == "Statewise Trends":
+    st.markdown("### 🗺️ Statewise Trends Overview")
+
+    import pandas as pd
+    import psycopg2
+
+    # ===================== Load Data =====================
+    @st.cache_data(ttl=600)
+    def get_sales_data():
+        conn = psycopg2.connect(
+            host="localhost",
+            database="femisafe_test_db",
+            user="ayish",
+            password="ajtp@511Db"
+        )
+        query = "SELECT * FROM femisafe_sales;"
+        df = pd.read_sql(query, conn)
+        conn.close()
+        return df
+
+    df = get_sales_data()
+    df["channels"] = df["channels"].str.strip().str.title()
+
+    # ===================== Filter Setup =====================
+    channels = sorted(df["channels"].dropna().unique().tolist())
+    products = sorted(df["products"].dropna().unique().tolist())
+    months = sorted(df["month"].dropna().unique().tolist())
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        selected_channel = st.selectbox("🛒 Select Channel", options=["All"] + channels, index=0)
+
+    with col2:
+        selected_product = st.selectbox("📦 Select Product", options=["All"] + products, index=0)
+
+    with col3:
+        selected_month = st.selectbox("🗓️ Select Month", options=["All"] + months, index=0)
+
+    # ===================== Apply Filters =====================
+    df_filtered = df.copy()
+
+    if selected_channel != "All":
+        df_filtered = df_filtered[df_filtered["channels"] == selected_channel]
+
+    if selected_product != "All":
+        df_filtered = df_filtered[df_filtered["products"] == selected_product]
+
+    if selected_month != "All":
+        df_filtered = df_filtered[df_filtered["month"] == selected_month]
+
+    # ✅ Normalize state names
+    df_filtered["state"] = df_filtered["state"].str.strip().str.title()
+
+    # ===================== Statewise Summary =====================
+    summary = (
+        df_filtered.groupby("state", as_index=False)
+        .agg({
+            "sku_units": "sum",
+            "revenue": "sum"
+        })
+        .sort_values(by="revenue", ascending=False)
+    )
+
+    # Calculate revenue percentage
+    total_revenue = summary["revenue"].sum()
+    summary["revenue_%"] = (summary["revenue"] / total_revenue) * 100
+
+    # ✅ Rename header for display
+    summary = summary.rename(columns={
+        "state": "State",
+        "sku_units": "Units Sold",
+        "revenue": "Revenue",
+        "revenue_%": "Revenue_%"
+    })
+
+    # ✅ Add Total row here
+    total_row = pd.DataFrame({
+        "State": ["Total"],
+        "Units Sold": [summary["Units Sold"].sum()],
+        "Revenue": [summary["Revenue"].sum()],
+        "Revenue_%": [100.00]
+    })
+
+    summary = pd.concat([summary, total_row], ignore_index=True)
+
+    # ===================== Display Table =====================
+    st.markdown("#### 📈 Statewise Performance")
+    st.dataframe(
+        summary.style.format({
+            "Units Sold": "{:,.0f}",
+            "Revenue": "₹{:,.2f}",
+            "Revenue_%": "{:.2f}%"
+        })
+    )
+
+#=============END OF STATEWISE TRENDS========================
+
+# ======================================
+# Product Performance
+# ======================================
+elif main_choice == "Overall Dashboards" and sub_choice == "Product Performance":
+
+    import pandas as pd
+    import psycopg2
+
+    # ===================== Load Data =====================
+    @st.cache_data(ttl=600)
+    def get_sales_data():
+        conn = psycopg2.connect(
+            host="localhost",
+            database="femisafe_test_db",
+            user="ayish",
+            password="ajtp@511Db"
+        )
+        query = "SELECT * FROM femisafe_sales;"
+        df = pd.read_sql(query, conn)
+        conn.close()
+        return df
+
+    df = get_sales_data()
+    df["channels"] = df["channels"].str.strip().str.title()
+
+    # ===================== Filter Setup =====================
+    channels = sorted(df["channels"].dropna().unique().tolist())
+    states = sorted(df["state"].dropna().unique().tolist())
+    months = sorted(df["month"].dropna().unique().tolist())
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        selected_channel = st.selectbox("🛒 Select Channel", options=["All"] + channels, index=0)
+
+    with col2:
+        selected_state = st.selectbox("📍 Select State", options=["All"] + states, index=0)
+
+    with col3:
+        selected_month = st.selectbox("🗓️ Select Month", options=["All"] + months, index=0)
+
+    # ===================== Apply Filters =====================
+    df_filtered = df.copy()
+
+    if selected_channel != "All":
+        df_filtered = df_filtered[df_filtered["channels"] == selected_channel]
+
+    if selected_state != "All":
+        df_filtered = df_filtered[df_filtered["state"] == selected_state]
+
+    if selected_month != "All":
+        df_filtered = df_filtered[df_filtered["month"] == selected_month]
+
+    # ===================== Productwise Summary =====================
+    summary = (
+        df_filtered.groupby("products", as_index=False)
+        .agg({
+            "sku_units": "sum",
+            "revenue": "sum"
+        })
+        .sort_values(by="revenue", ascending=False)
+    )
+
+    # Calculate revenue percentage
+    total_revenue = summary["revenue"].sum()
+    summary["revenue_%"] = (summary["revenue"] / total_revenue) * 100
+
+    # ✅ Rename header for display
+    summary = summary.rename(columns={
+        "products": "Products",
+        "sku_units": "Units Sold",
+        "revenue": "Revenue",
+        "revenue_%": "Revenue_%"
+    })
+
+    # ✅ Add Total row
+    total_row = pd.DataFrame({
+        "Products": ["Total"],
+        "Units Sold": [summary["Units Sold"].sum()],
+        "Revenue": [summary["Revenue"].sum()],
+        "Revenue_%": [100.00]
+    })
+
+    summary = pd.concat([summary, total_row], ignore_index=True)
+
+    # ===================== Display Table =====================
+    st.markdown("#### 💰 Product Performance Summary")
+    st.dataframe(
+        summary.style.format({
+            "Units Sold": "{:,.0f}",
+            "Revenue": "₹{:,.2f}",
+            "Revenue_%": "{:.2f}%"
+        })
+    )
+#=============END OF PRODUCT PERFORMANCE========================
+
+# ===================== LOCATION OVERLAP =====================
+if main_choice == "Overall Dashboards" and sub_choice == "Location Overlap":
+    import psycopg2
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    st.markdown("### 🧭 Amazon vs Shopify — Statewise Overlap")
+
+    # ✅ Connect to database and load fresh data
+    conn = psycopg2.connect(
+        dbname="femisafe_test_db",
+        user="ayish",
+        password="ajtp@511Db",
+        host="localhost",
+        port="5432"
+    )
+    df = pd.read_sql("SELECT * FROM femisafe_sales", conn)
+    conn.close()
+
+    # Normalize column names
+    df.columns = df.columns.str.strip().str.lower()
+
+    # Clean up channels and state names
+    df["channels"] = df["channels"].str.strip().str.title()
+    df["state"] = df["state"].str.strip().str.title()
+    df["month"] = df["month"].str.strip().str.title()
+    df["products"] = df["products"].str.strip()
+
+    # ===================== Filters =====================
+    months = sorted(df["month"].dropna().unique().tolist())
+    products = sorted(df["products"].dropna().unique().tolist())
+    top_options = ["Top 5", "Top 10", "Top 15", "All"]
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        selected_month = st.selectbox("🗓️ Select Month", options=["All"] + months, index=0)
+    with col2:
+        selected_product = st.selectbox("📦 Select Product", options=["All"] + products, index=0)
+    with col3:
+        selected_top = st.selectbox("🏆 Show", options=top_options, index=1)
+
+    # ===================== Filter Data =====================
+    df_filtered = df.copy()
+
+    if selected_month != "All":
+        df_filtered = df_filtered[df_filtered["month"] == selected_month]
+    if selected_product != "All":
+        df_filtered = df_filtered[df_filtered["products"] == selected_product]
+
+    # Keep only Amazon and Shopify
+    df_filtered = df_filtered[df_filtered["channels"].isin(["Amazon", "Shopify"])]
+
+
+    # ===================== Aggregate =====================
+    overlap_summary = (
+        df_filtered.groupby(["state", "channels"], as_index=False)
+        .agg({"sku_units": "sum"})
+    )
+
+    # Pivot so that channels are columns
+    overlap_pivot = overlap_summary.pivot(index="state", columns="channels", values="sku_units").fillna(0)
+
+    # Add total column for sorting
+    overlap_pivot["Total"] = overlap_pivot.sum(axis=1)
+    overlap_pivot = overlap_pivot.sort_values("Total", ascending=False)
+
+    # Apply Top N filter
+    if selected_top != "All":
+        n = int(selected_top.split()[1])
+        overlap_pivot = overlap_pivot.head(n)
+
+    # ===================== Totals for Shopify & Amazon =====================
+    if not df_filtered.empty:
+        shopify_data = df_filtered[df_filtered["channels"].str.lower() == "shopify"]
+        amazon_data = df_filtered[df_filtered["channels"].str.lower() == "amazon"]
+
+        shopify_units = shopify_data["sku_units"].sum()
+        amazon_units = amazon_data["sku_units"].sum()
+
+        shopify_revenue = shopify_data["revenue"].sum()
+        amazon_revenue = amazon_data["revenue"].sum()
+    else:
+        shopify_units = amazon_units = shopify_revenue = amazon_revenue = 0
+
+    # ===================== Card Styling =====================
+    card_style = """
+        background-color: #3a3a3a;
+        color: white;
+        padding: 20px 10px;
+        border-radius: 10px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        width: 100%;
+    """
+    number_style = "font-size: 1.8rem; font-weight: bold; margin: 0;"
+    label_style = "font-size: 0.9rem; margin-top: 5px; color: #e0e0e0; font-weight: 500;"
+    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+
+    # ===================== Display Cards =====================
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">₹{shopify_revenue:,.0f}</p>
+            <p style="{units_style}">{int(shopify_units):,} units</p>
+            <p style="{label_style}">Shopify Total</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">₹{amazon_revenue:,.0f}</p>
+            <p style="{units_style}">{int(amazon_units):,} units</p>
+            <p style="{label_style}">Amazon Total</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+    # ===================== Plotly Chart =====================
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=overlap_pivot.index,
+        y=overlap_pivot["Amazon"],
+        name="Amazon",
+        marker_color="purple",
+        hovertemplate="Amazon<br>%{x}: %{y:,} units<extra></extra>"
+    ))
+
+    fig.add_trace(go.Bar(
+        x=overlap_pivot.index,
+        y=overlap_pivot["Shopify"],
+        name="Shopify",
+        marker_color="green",
+        hovertemplate="Shopify<br>%{x}: %{y:,} units<extra></extra>"
+    ))
+
+    fig.update_layout(
+        barmode="group",
+        title=dict(
+            text=f"📦 Unit-wise Overlap by State — Amazon vs Shopify",
+            font=dict(color="black", size=18)
+        ),
+        xaxis=dict(
+            title="State",
+            tickfont=dict(color="black"),
+            showgrid=True,
+            gridcolor="rgba(200,200,200,0.3)"
+        ),
+        yaxis=dict(
+            title="Units Sold",
+            tickfont=dict(color="black"),
+            showgrid=True,
+            gridcolor="rgba(200,200,200,0.3)"
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5,
+            font=dict(color="black")
+        ),
+        height=450,
+        template="plotly_white",
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=50, r=50, t=50, b=50)
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
 elif main_choice == "Blinkit":
@@ -970,7 +1339,7 @@ elif main_choice == "Blinkit":
                 host="localhost",
                 database="femisafe_test_db",
                 user="ayish",
-                password="ajtp@511Db"  # replace with your actual DB password
+                password="ajtp@511Db" 
             )
             query = "SELECT * FROM femisafe_blinkit_addata;"
             df = pd.read_sql(query, conn)
@@ -991,6 +1360,14 @@ elif main_choice == "Blinkit":
             conn.close()
             return df
 
+        # ✅ Load data
+        df_ad = get_blinkit_addata()
+        df_sales = get_blinkit_data()
+
+        # ✅ Ensure 'date' column is datetime
+        df_ad['date'] = pd.to_datetime(df_ad['date'], errors='coerce')
+
+
         # ===================== Card Styling =====================
         card_style = """
             background-color: #3a3a3a;
@@ -1005,36 +1382,61 @@ elif main_choice == "Blinkit":
         label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
         units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
 
+        # ===================== Metric Calculations =====================
+        df_ad['date'] = pd.to_datetime(df_ad['date'], errors='coerce')
+
+        latest_date = df_ad['date'].max()
+        latest_month = df_ad['date'].dt.to_period('M').max()
+
+        # Card 1 → Latest Month Spend
+        month_spend = df_ad[df_ad['date'].dt.to_period('M') == latest_month]['estimated_budget_consumed'].sum()
+
+        # Card 2 → Latest Day Spend
+        day_spend = df_ad[df_ad['date'] == latest_date]['estimated_budget_consumed'].sum()
+
+        # Card 3 → ROAS for Last 7 Days
+        seven_days_ago = latest_date - pd.Timedelta(days=7)
+        last7_df = df_ad[(df_ad['date'] >= seven_days_ago) & (df_ad['date'] <= latest_date)]
+
+        if last7_df['estimated_budget_consumed'].sum() > 0:
+            last7_roas = last7_df['direct_sales'].sum() / last7_df['estimated_budget_consumed'].sum()
+        else:
+            last7_roas = None  # safer handling when no spend
+
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.markdown(f"""
             <div style="{card_style}">
-                <p style="{number_style}">₹0</p>
-                <p style="{units_style}">Latest Month Spend</p>
-                <p style="{label_style}">Budget Consumed</p>
+                <p style="{number_style}">₹{month_spend:,.0f}</p>
+                <p style="{units_style}">{latest_month.strftime('%B %Y')}</p>
+                <p style="{label_style}">Latest Month Spend</p>
             </div>
             """, unsafe_allow_html=True)
 
         with col2:
             st.markdown(f"""
             <div style="{card_style}">
-                <p style="{number_style}">₹0</p>
-                <p style="{units_style}">Total Spend</p>
-                <p style="{label_style}">Overall Budget Used</p>
+                <p style="{number_style}">₹{day_spend:,.0f}</p>
+                <p style="{units_style}">{latest_date.strftime('%b %d, %Y')}</p>
+                <p style="{label_style}">Latest Day Spend</p>
             </div>
             """, unsafe_allow_html=True)
 
         with col3:
+            roas_display = f"{last7_roas:.2f}×" if last7_roas is not None else "–"
             st.markdown(f"""
             <div style="{card_style}">
-                <p style="{number_style}">0.0×</p>
-                <p style="{units_style}">Average ROAS</p>
-                <p style="{label_style}">All Campaigns</p>
+                <p style="{number_style}">{roas_display}</p>
+                <p style="{units_style}">Last 7 Days</p>
+                <p style="{label_style}">Average ROAS</p>
             </div>
             """, unsafe_allow_html=True)
 
-        # ===================== Load Data =====================
+
+
+        # ===================TABLE STARTS HERE== Load Data =====================
         df_ad = get_blinkit_addata()
         df_sales = get_blinkit_data()
 
@@ -1092,31 +1494,134 @@ elif main_choice == "Blinkit":
         # ===================== Sort =====================
         pivot = pivot.sort_values(by=f'gross_sales_{latest_date.strftime("%b %d")}', ascending=False)
 
-        # ===================== Display =====================
-        def color_growth(val):
+        # ===================== Multi-Level Header Setup =====================
+        prev_label = prev_date.strftime("%b %d")
+        latest_label = latest_date.strftime("%b %d")
+
+        # Create multi-level columns
+        multi_columns = pd.MultiIndex.from_tuples([
+            ('Product Name', ''),
+            (prev_label, 'Ad Spend'),
+            (prev_label, 'Ad Sales'),
+            (prev_label, 'Gross Sales'),
+            (prev_label, 'Direct ROAS'),
+            (prev_label, 'ROAS'),
+            (latest_label, 'Ad Spend'),
+            (latest_label, 'Ad Sales'),
+            (latest_label, 'Gross Sales'),
+            (latest_label, 'Direct ROAS'),
+            (latest_label, 'ROAS'),
+            ('Growth %', 'Gross Sales'),
+            ('Growth %', 'Ad Spend')
+        ])
+
+        # Map the flat column names to the new multi-index
+        rename_dict = {
+            'product_name': ('Product Name', ''),
+            f'estimated_budget_consumed_{prev_label}': (prev_label, 'Ad Spend'),
+            f'direct_sales_{prev_label}': (prev_label, 'Ad Sales'),
+            f'gross_sales_{prev_label}': (prev_label, 'Gross Sales'),
+            f'direct_roas_{prev_label}': (prev_label, 'Direct ROAS'),
+            f'roas_{prev_label}': (prev_label, 'ROAS'),
+            f'estimated_budget_consumed_{latest_label}': (latest_label, 'Ad Spend'),
+            f'direct_sales_{latest_label}': (latest_label, 'Ad Sales'),
+            f'gross_sales_{latest_label}': (latest_label, 'Gross Sales'),
+            f'direct_roas_{latest_label}': (latest_label, 'Direct ROAS'),
+            f'roas_{latest_label}': (latest_label, 'ROAS'),
+            'Gross_Sales_Growth_%': ('Growth %', 'Gross Sales'),
+            'Ad_Spend_Growth_%': ('Growth %', 'Ad Spend')
+        }
+
+        pivot = pivot.rename(columns=rename_dict)
+
+        # Keep only the intended ordered columns
+        ordered_cols = [col for col in multi_columns if col in pivot.columns]
+        pivot = pivot[ordered_cols]
+
+        # Apply the new multi-index
+        pivot.columns = pd.MultiIndex.from_tuples(ordered_cols)
+
+        # ===================== Styling =====================
+        def color_growth(val, column_name):
             if pd.isna(val):
                 return ''
-            color = 'green' if val > 0 else 'red'
+            if column_name == 'Ad_Spend_Growth_%':
+                # Less spend is desirable → negative = green, positive = red
+                color = 'green' if val < 0 else 'red'
+            else:
+                # For Gross Sales Growth → positive = green, negative = red
+                color = 'green' if val > 0 else 'red'
             return f'color: {color}; font-weight: bold;'
 
+        # ===================== Add Total Row =====================
+        total_prev_spend = pivot[(prev_label, 'Ad Spend')].sum()
+        total_latest_spend = pivot[(latest_label, 'Ad Spend')].sum()
+        total_prev_sales = pivot[(prev_label, 'Ad Sales')].sum()
+        total_latest_sales = pivot[(latest_label, 'Ad Sales')].sum()
+        total_prev_gross = pivot[(prev_label, 'Gross Sales')].sum()
+        total_latest_gross = pivot[(latest_label, 'Gross Sales')].sum()
+
+        # Compute total-level metrics
+        total_prev_roas = total_prev_gross / total_prev_spend if total_prev_spend != 0 else 0
+        total_latest_roas = total_latest_gross / total_latest_spend if total_latest_spend != 0 else 0
+        total_prev_direct_roas = total_prev_sales / total_prev_spend if total_prev_spend != 0 else 0
+        total_latest_direct_roas = total_latest_sales / total_latest_spend if total_latest_spend != 0 else 0
+
+        gross_growth = ((total_latest_gross - total_prev_gross) / total_prev_gross * 100) if total_prev_gross != 0 else 0
+        spend_growth = ((total_latest_spend - total_prev_spend) / total_prev_spend * 100) if total_prev_spend != 0 else 0
+
+        # Build Total Row
+        total_row = pd.DataFrame([{
+            ('Product Name', ''): 'Total',
+            (prev_label, 'Ad Spend'): total_prev_spend,
+            (prev_label, 'Ad Sales'): total_prev_sales,
+            (prev_label, 'Gross Sales'): total_prev_gross,
+            (prev_label, 'Direct ROAS'): total_prev_direct_roas,
+            (prev_label, 'ROAS'): total_prev_roas,
+            (latest_label, 'Ad Spend'): total_latest_spend,
+            (latest_label, 'Ad Sales'): total_latest_sales,
+            (latest_label, 'Gross Sales'): total_latest_gross,
+            (latest_label, 'Direct ROAS'): total_latest_direct_roas,
+            (latest_label, 'ROAS'): total_latest_roas,
+            ('Growth %', 'Gross Sales'): gross_growth,
+            ('Growth %', 'Ad Spend'): spend_growth
+        }])
+
+        # Append Total Row
+        pivot = pd.concat([pivot, total_row], ignore_index=True)
+
+        # ===================== Display =====================
         st.dataframe(
             pivot.style
-            .format({
-                f'estimated_budget_consumed_{prev_date.strftime("%b %d")}': '₹{:.2f}',
-                f'estimated_budget_consumed_{latest_date.strftime("%b %d")}': '₹{:.2f}',
-                f'direct_sales_{prev_date.strftime("%b %d")}': '₹{:.2f}',
-                f'direct_sales_{latest_date.strftime("%b %d")}': '₹{:.2f}',
-                f'gross_sales_{prev_date.strftime("%b %d")}': '₹{:.2f}',
-                f'gross_sales_{latest_date.strftime("%b %d")}': '₹{:.2f}',
-                f'direct_roas_{prev_date.strftime("%b %d")}': '{:.2f}',
-                f'direct_roas_{latest_date.strftime("%b %d")}': '{:.2f}',
-                f'roas_{prev_date.strftime("%b %d")}': '{:.2f}',
-                f'roas_{latest_date.strftime("%b %d")}': '{:.2f}',
-                'Gross_Sales_Growth_%': '{:+.2f}%',
-                'Ad_Spend_Growth_%': '{:+.2f}%'
-            })
-            .applymap(color_growth, subset=['Gross_Sales_Growth_%', 'Ad_Spend_Growth_%'])
+                .format({
+                    (prev_label, 'Ad Spend'): '₹{:.2f}',
+                    (prev_label, 'Ad Sales'): '₹{:.2f}',
+                    (prev_label, 'Gross Sales'): '₹{:.2f}',
+                    (prev_label, 'Direct ROAS'): '{:.2f}',
+                    (prev_label, 'ROAS'): '{:.2f}',
+                    (latest_label, 'Ad Spend'): '₹{:.2f}',
+                    (latest_label, 'Ad Sales'): '₹{:.2f}',
+                    (latest_label, 'Gross Sales'): '₹{:.2f}',
+                    (latest_label, 'Direct ROAS'): '{:.2f}',
+                    (latest_label, 'ROAS'): '{:.2f}',
+                    ('Growth %', 'Gross Sales'): '{:+.2f}%',
+                    ('Growth %', 'Ad Spend'): '{:+.2f}%'
+                })
+                .apply(
+                    lambda col: [
+                        (
+                            f'color: {"green" if v < 0 else "red"}; font-weight: bold;'
+                            if col.name == ('Growth %', 'Ad Spend') else
+                            f'color: {"green" if v > 0 else "red"}; font-weight: bold;'
+                        ) if pd.notna(v) else ''
+                        for v in col
+                    ],
+                    subset=[('Growth %', 'Gross Sales'), ('Growth %', 'Ad Spend')]
+                ),
+
         )
+
+
 
     # ===================== //BLINKIT AD REPORT =====================
 
@@ -1160,7 +1665,7 @@ elif main_choice == "Data Query":
     chain = prompt | llm | StrOutputParser()
 
     # Step 4: Natural language input
-    user_query = st.text_input("Ask your question (e.g. 'Show me September sterilizer consumption')")
+    user_query = st.text_input("Ask your question (e.g. 'Total Revenue from Flipkart in September')")
 
     if st.button("Run Query"):
         if user_query:
@@ -1176,16 +1681,71 @@ elif main_choice == "Data Query":
 
 
             try:
-                # Execute the generated SQL query
                 result = db.run(response)
 
-                # Display result
-                if result:
-                    st.success("✅ Query executed successfully!")
-                    st.write(result)
-                else:
+                if not result:
                     st.warning("No data returned for this query.")
+                else:
+                    st.success("✅ Query executed successfully!")
+
+                    import pandas as pd
+                    import re
+                    from decimal import Decimal
+
+                    # --- Normalize result ---
+                    # Ensure it’s a list of tuples
+                    if isinstance(result, str):
+                        # Sometimes returns as a string like "[('454467.48',)]"
+                        try:
+                            import ast
+                            result = ast.literal_eval(result)
+                        except Exception:
+                            result = [(result,)]
+
+                    # Handle mis-typed inner elements (e.g. characters)
+                    if isinstance(result, list) and all(isinstance(x, str) for x in result):
+                        result = [( "".join(result), )]
+
+                    # Clean up Decimal and stringified Decimal
+                    cleaned = []
+                    for row in result:
+                        cleaned_row = []
+                        for x in row:
+                            if isinstance(x, Decimal):
+                                cleaned_row.append(float(x))
+                            elif isinstance(x, str) and re.match(r"Decimal\('([\d\.]+)'\)", x):
+                                cleaned_row.append(float(re.findall(r"Decimal\('([\d\.]+)'\)", x)[0]))
+                            else:
+                                cleaned_row.append(x)
+                        cleaned.append(tuple(cleaned_row))
+                    result = cleaned
+
+                    # --- Display logic ---
+                    if len(result) == 1 and len(result[0]) == 1:
+                        value = result[0][0]
+                        if isinstance(value, (int, float)):
+                            formatted = f"₹{value:,.2f}"
+                        else:
+                            formatted = str(value)
+
+                        st.markdown(
+                            f"""
+                            <div style='
+                                background-color:#2d2d2d;
+                                color:white;
+                                border-radius:10px;
+                                padding:20px;
+                                text-align:center;
+                                font-size:1.6rem;
+                                font-weight:bold;
+                            '>{formatted}</div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+
+                    else:
+                        df = pd.DataFrame(result)
+                        st.dataframe(df, use_container_width=True)
 
             except Exception as e:
                 st.error(f"⚠️ Error running query: {e}")
-
