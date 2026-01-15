@@ -20,6 +20,7 @@ def get_blinkit_data():
         SELECT 
             order_date,
             sku,
+            product,
             feeder_wh,
             net_revenue,
             quantity
@@ -31,7 +32,6 @@ def get_blinkit_data():
     df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
     df["date"] = df["order_date"].dt.date
     return df
-
 
 # ---------------------------------------------------------
 # PAGE FUNCTION
@@ -102,7 +102,7 @@ def page():
         })
 
         # FIXED f-string closing
-        subtotal['Units Delta'] = (
+        subtotal['Units Delta'] = ( 
             subtotal[f'quantity_{latest_date.strftime("%b%d")}'] -
             subtotal[f'quantity_{d7_date.strftime("%b%d")}']
         )
@@ -126,7 +126,7 @@ def page():
         if "quantity" in col:
             final_df[col] = final_df[col].astype(int)
 
-    # ================= Multi-level header formatting =================
+    # ================= Multi-level header formatting blinkit citywise=================
     date_labels = {
         d7_date.strftime("%b%d"): d7_date.strftime("%B %d"),
         d1_date.strftime("%b%d"): d1_date.strftime("%B %d"),
@@ -150,3 +150,77 @@ def page():
     final_df.columns = multi_columns
 
     st.dataframe(final_df, use_container_width=True)
+
+    # ---------------------------------------------------------
+    # FILTERS (Side-by-side — Product + Warehouse)
+    # ---------------------------------------------------------
+
+    st.markdown("### 🔍 Filters")
+
+    col1, col2 = st.columns(2)
+
+    # FIX: use product column instead of SKU
+    all_products = sorted(df['product'].dropna().unique())
+    all_warehouses = sorted(df['feeder_wh'].dropna().unique())
+
+    with col1:
+        selected_product = st.selectbox("Select Product", ["All"] + list(all_products))
+
+    with col2:
+        selected_warehouse = st.selectbox("Select Warehouse", ["All"] + list(all_warehouses))
+
+    # Apply filters
+    filtered = df.copy()
+
+    if selected_product != "All":
+        filtered = filtered[filtered['product'] == selected_product]
+
+    if selected_warehouse != "All":
+        filtered = filtered[filtered['feeder_wh'] == selected_warehouse]
+
+
+    # ---------------------------------------------------------
+    # LAST 30 DAYS CHART (Fix datetime error)
+    # ---------------------------------------------------------
+
+    filtered['date'] = filtered['order_date'].dt.date
+
+    # latest_date is already a datetime.date → SAFE
+    start_date = latest_date - pd.Timedelta(days=30)
+
+    # FIX: remove .date()
+    last_30 = filtered[filtered['date'] >= start_date]
+
+    daily_summary = last_30.groupby('date').agg({
+        'quantity': 'sum',
+        'net_revenue': 'sum'
+    }).reset_index()
+
+    daily_summary = daily_summary.sort_values('date')
+
+
+
+    # ---------------------------------------------------------
+    # BAR CHART (Units labels + revenue on hover)
+    # ---------------------------------------------------------
+
+    import plotly.express as px
+
+    fig = px.bar(
+        daily_summary,
+        x='date',
+        y='quantity',
+        hover_data={'net_revenue': True, 'quantity': True},
+        labels={'quantity': 'Units Sold', 'date': 'Date'},
+    )
+
+    fig.update_traces(text=daily_summary['quantity'], textposition='outside')
+
+    fig.update_layout(
+        height=450,
+        xaxis_title="Date",
+        yaxis_title="Units Sold",
+        bargap=0.2
+    )
+
+    st.plotly_chart(fig, use_container_width=True)

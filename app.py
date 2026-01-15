@@ -65,7 +65,9 @@ if mode == "Primary":
             "Overall Sales Overview",
             "Statewise Trends",
             "Product Performance",
-            "Special Primary Charts"
+            "Special Primary Charts",
+            "Target 3 Months",
+            "Dynamic Table"
         ]
     )
 
@@ -84,6 +86,14 @@ if mode == "Primary":
     elif primary_choice == "Special Primary Charts":
         from pages.primary.special_primary_charts import page as special_page
         special_page()
+
+    elif primary_choice == "Target 3 Months":
+        from pages.primary.target_3_months import page as target_page
+        target_page()
+
+    elif primary_choice == "Dynamic Table":
+        from pages.primary.dynamic_table import page as dynamic_page
+        dynamic_page()
 
 
 # ------------------------------------------------------
@@ -106,23 +116,60 @@ elif mode == "Secondary":
             "Citywise Performance",
             "Ad Spend Report",
             "Organic Share",
-            "Aging Report"
+            "Aging Report",
+            "Weekly Sales Analysis"
         ]
-    else:
+
+    elif channel_choice == "Amazon":
         report_options = [
             "Sales Dashboard",
-            "Ad Report"
+            "Productwise Sales",
+            "Ad Spend Report",
+            "Organic Share"
         ]
+    elif channel_choice == "Shopify":
+        report_options = [
+            "Sales Dashboard",
+            "Productwise Sales",
+            "Citywise Performance"
+        ]
+
+    elif channel_choice == "Swiggy":
+        report_options = [
+            "Sales Dashboard",
+            "Productwise Sales",
+            "Citywise Performance",
+            "Ad Spend Report",
+            "Organic Share"
+        ]
+
+    else:
+        report_options = ["Sales Dashboard"]
 
     report_choice = st.sidebar.selectbox("Select Report", report_options)
 
+
     # ---------------- AMAZON ----------------
     if channel_choice == "Amazon":
+
         if report_choice == "Sales Dashboard":
             from pages.secondary.amazon.sales_dashboard import page as pg
+        
+        elif report_choice == "Productwise Sales":
+            from pages.secondary.amazon.productwise_sales import page as pg
+
+        elif report_choice == "Ad Spend Report":
+            from pages.secondary.amazon.ad_spend_report import page as pg
+
+        elif report_choice == "Organic Sales":
+            from pages.secondary.amazon.organic_share import page as pg
+
         else:
-            from pages.secondary.amazon.ad_report import page as pg
+            st.error("Invalid report choice selected for Amazon.")
+            st.stop()
+
         pg()
+
 
     # ---------------- BLINKIT ----------------
     elif channel_choice == "Blinkit":
@@ -144,6 +191,9 @@ elif mode == "Secondary":
 
         elif report_choice == "Aging Report":
             from pages.secondary.blinkit.blinkit_aging_report import page as pg
+
+        elif report_choice == "Weekly Sales Analysis":
+            from pages.secondary.blinkit.blinkit_weekly_sales_analysis import page as pg
 
         pg()
 

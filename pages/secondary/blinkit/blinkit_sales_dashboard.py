@@ -27,6 +27,7 @@ def page():
                 sku,
                 feeder_wh,
                 net_revenue,
+                product,
                 quantity
             FROM femisafe_blinkit_salesdata;
         """
@@ -81,6 +82,22 @@ def page():
             <p style="{label_style}">Total Units Sold (All Months)</p>
         </div>
         """, unsafe_allow_html=True)
+
+    # ===================== Product Filter =====================
+
+    # Create a sorted product list
+    product_list = sorted(df_blinkit['product'].dropna().unique())
+
+    # Single-select dropdown
+    selected_product = st.selectbox(
+        "Filter by Product",
+        options=["All Products"] + product_list,
+        index=0
+    )
+
+    # Apply filter
+    if selected_product != "All Products":
+        df_blinkit = df_blinkit[df_blinkit['product'] == selected_product]
 
     # ===================== Chart Section =====================
 
