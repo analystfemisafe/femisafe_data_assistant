@@ -1,26 +1,40 @@
+import os
 import streamlit as st
 import pandas as pd
-import psycopg2
+from sqlalchemy import create_engine, text
 
 # ======================================
-# Load Data
+# Load Data (Universal)
 # ======================================
 @st.cache_data(ttl=600)
 def load_data():
-    conn = psycopg2.connect(
-        dbname="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db",
-        host="localhost",
-        port="5432"
-    )
-    
-    df = pd.read_sql("SELECT * FROM femisafe_sales", conn)
-    conn.close()
+    try:
+        # --- Universal Secret Loader ---
+        try:
+            # 1. Try Local Secrets (Laptop)
+            db_url = st.secrets["postgres"]["url"]
+        except (FileNotFoundError, KeyError):
+            # 2. Try Render Environment Variable (Cloud)
+            db_url = os.environ.get("DATABASE_URL")
+        
+        # Check if URL was found
+        if not db_url:
+            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+            return pd.DataFrame()
 
-    df.columns = df.columns.str.strip().str.lower()
-
-    return df
+        # Create Engine & Fetch Data
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            query = text("SELECT * FROM femisafe_sales")
+            df = pd.read_sql(query, conn)
+        
+        # Standardize columns
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+        
+    except Exception as e:
+        st.error(f"⚠️ Database Connection Failed: {e}")
+        return pd.DataFrame()
 
 
 # ======================================
@@ -32,18 +46,25 @@ def page():
 
     df = load_data()
 
+    if df.empty:
+        st.warning("No data available.")
+        return
+
     # ==============================
     # 🔍 FILTER SECTION
     # ==============================
     st.header("🔍 Filters")
 
-    filter_cols = ['month', 'channels', 'distributor', 'fulfilment_type', 'state', 'city', 'products']
+    # Define filter columns (Check if they exist in DF first)
+    possible_cols = ['month', 'channels', 'distributor', 'fulfilment_type', 'state', 'city', 'products']
+    filter_cols = [col for col in possible_cols if col in df.columns]
 
     filter_selection = {}
     cols = st.columns(3)
 
     for i, column in enumerate(filter_cols):
         with cols[i % 3]:
+            # added dropna to prevent sorting error
             unique_vals = sorted(df[column].dropna().astype(str).unique())
             choice = st.multiselect(f"Filter by {column.title()}", unique_vals)
             filter_selection[column] = choice
@@ -59,8 +80,11 @@ def page():
     # ==============================
     st.header("📌 Select Row Dimensions (Group By)")
 
-    all_columns = ['order_date', 'month', 'channels', 'distributor', 'fulfilment_type',
-                   'categories', 'products', 'sku', 'state', 'city', 'pincode']
+    possible_row_dims = ['order_date', 'month', 'channels', 'distributor', 'fulfilment_type',
+                    'categories', 'products', 'sku', 'state', 'city', 'pincode']
+    
+    # Only show columns that actually exist in the database
+    all_columns = [col for col in possible_row_dims if col in df.columns]
 
     row_dims = st.multiselect("Choose rows (grouping columns):", all_columns)
 
@@ -69,7 +93,8 @@ def page():
     # ==============================
     st.header("📦 Select Value Columns")
 
-    value_columns = ["sku_units", "revenue"]
+    possible_values = ["sku_units", "revenue"]
+    value_columns = [col for col in possible_values if col in df.columns]
 
     selected_values = st.multiselect("Choose values to aggregate:", value_columns)
 
@@ -86,6 +111,10 @@ def page():
         st.warning("Select at least one row and one value to generate the table.")
         return
 
+    # Ensure numeric columns are numeric before aggregating
+    for col in selected_values:
+        filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce').fillna(0)
+
     # Create aggregation dictionary
     agg_dict = {value: agg_choice for value in selected_values}
 
@@ -98,7 +127,7 @@ def page():
     # 📥 Excel Export
     # ==============================
     st.download_button(
-        "⬇️ Download Table as Excel",
+        "⬇️ Download Table as CSV",
         data=pivot_table.to_csv(index=False).encode("utf-8"),
         file_name="dynamic_pivot.csv",
         mime="text/csv"
