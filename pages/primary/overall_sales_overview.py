@@ -5,19 +5,14 @@ import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 
 def page():
+
     st.title("📊 Overall Sales Overview")
-    st.markdown("### Combined Performance (Shopify + Amazon)")
-    
 
     # ---------------------------------------------------------
-    # 1. DATA LOADING FUNCTION (UNIVERSAL CONNECTIVITY)
+    # 1. UNIVERSAL DATA LOADER (Replaces local utils & psycopg2)
     # ---------------------------------------------------------
     @st.cache_data(ttl=600)
-    def get_data(query_string):
-        """
-        Connects to Neon and executes the specific query passed to it.
-        Works on both Local (secrets.toml) and Render (Env Vars).
-        """
+    def load_data():
         try:
             # --- Universal Secret Loader ---
             try:
@@ -32,108 +27,178 @@ def page():
                 st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
                 return pd.DataFrame()
 
-            # Create Engine
+            # Create Engine & Fetch Data
             engine = create_engine(db_url)
-            
             with engine.connect() as conn:
-                df = pd.read_sql(text(query_string), conn)
+                query = text("SELECT * FROM femisafe_sales")
+                df = pd.read_sql(query, conn)
+            
+            # Standardize columns immediately
+            df.columns = df.columns.str.strip().str.lower()
             return df
             
         except Exception as e:
-            # If a table doesn't exist yet or connection fails, return empty
-            # st.error(f"Error: {e}") # Uncomment to debug
+            st.error(f"⚠️ Database Connection Failed: {e}")
             return pd.DataFrame()
 
-    # ---------------------------------------------------------
-    # 2. FETCH DATA (Using Lowercase Table Names)
-    # ---------------------------------------------------------
-    
-    # Fetch Shopify Data
-    df_shopify = get_data("SELECT * FROM femisafe_shopify_salesdata")
-    
-    # Fetch Amazon Data
-    df_amazon = get_data("SELECT * FROM femisafe_amazon_salesdata")
+    # Load data once
+    df = load_data()
+
+    if df.empty:
+        st.warning("No data available.")
+        return
 
     # ---------------------------------------------------------
-    # 3. CALCULATE & CLEAN TOTALS
+    # 2. PREPROCESS DATA
     # ---------------------------------------------------------
+    # Ensure correct types
+    df['revenue'] = pd.to_numeric(df['revenue'], errors='coerce').fillna(0)
     
-    # --- Function to Clean Currency Columns ---
-    def clean_currency(df, col_name):
-        if not df.empty and col_name in df.columns:
-            # Remove symbols like ₹, Rs, commas, spaces
-            # Regex: Keep only digits (0-9) and dots (.)
-            # We work on a copy to avoid SettingWithCopy warnings
-            clean_series = df[col_name].astype(str).str.replace(r'[^\d.]', '', regex=True)
-            return pd.to_numeric(clean_series, errors='coerce').fillna(0).sum()
-        return 0
-
-    # --- Process Shopify ---
-    shopify_revenue = 0
-    if not df_shopify.empty:
-        # Standardize columns
-        df_shopify.columns = df_shopify.columns.str.lower().str.strip().str.replace(' ', '_')
-        
-        # Calculate Revenue
-        if 'total_sales' in df_shopify.columns:
-            shopify_revenue = clean_currency(df_shopify, 'total_sales')
-        elif 'revenue' in df_shopify.columns:
-            shopify_revenue = clean_currency(df_shopify, 'revenue')
-            
-    # --- Process Amazon ---
-    amazon_revenue = 0
-    if not df_amazon.empty:
-        # Standardize columns
-        df_amazon.columns = df_amazon.columns.str.lower().str.strip().str.replace(' ', '_')
-        
-        # Calculate Revenue
-        if 'ordered_product_sales' in df_amazon.columns:
-            amazon_revenue = clean_currency(df_amazon, 'ordered_product_sales')
-        elif 'gross_revenue' in df_amazon.columns:
-            amazon_revenue = clean_currency(df_amazon, 'gross_revenue')
-
-    # Combined Total
-    total_combined_revenue = shopify_revenue + amazon_revenue
-
-    # ---------------------------------------------------------
-    # 4. DISPLAY METRICS
-    # ---------------------------------------------------------
-    
-    st.divider()
-    
-    # Card Styles
-    st.markdown("""
-    <style>
-    div[data-testid="stMetric"] {
-        background-color: #f0f2f6;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #d6d6d6;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    col1.metric("🌍 Total Revenue", f"₹{total_combined_revenue:,.0f}")
-    col2.metric("🛍️ Shopify", f"₹{shopify_revenue:,.0f}")
-    col3.metric("📦 Amazon", f"₹{amazon_revenue:,.0f}")
-
-    st.divider()
-
-    # ---------------------------------------------------------
-    # 5. CHARTS
-    # ---------------------------------------------------------
-    
-    if total_combined_revenue > 0:
-        st.subheader("Distribution by Channel")
-        
-        labels = ['Shopify', 'Amazon']
-        values = [shopify_revenue, amazon_revenue]
-        colors = ['#95BF47', '#FF9900'] # Shopify Green, Amazon Orange
-
-        fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4, marker=dict(colors=colors))])
-        fig.update_layout(height=400)
-        st.plotly_chart(fig, use_container_width=True)
+    # Handle 'units' vs 'sku_units' naming
+    if 'sku_units' in df.columns:
+        df['units'] = pd.to_numeric(df['sku_units'], errors='coerce').fillna(0)
+    elif 'units' in df.columns:
+        df['units'] = pd.to_numeric(df['units'], errors='coerce').fillna(0)
     else:
-        st.info("Waiting for data... (If you see 0, check if the CSVs are uploaded)")
+        df['units'] = 0
+
+    df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce')
+
+    # Total Metrics
+    total_revenue = df['revenue'].sum()
+    total_units = df['units'].sum()
+
+    # Latest Month Metrics
+    latest_date = df['order_date'].max()
+    latest_year = latest_date.year
+    latest_month = latest_date.month
+    month_name = latest_date.strftime("%B")
+
+    latest_month_df = df[
+        (df['order_date'].dt.year == latest_year) &
+        (df['order_date'].dt.month == latest_month)
+    ]
+
+    latest_month_revenue = latest_month_df['revenue'].sum()
+    latest_month_units = latest_month_df['units'].sum()
+
+    # -----------------------------------------
+    # 3. CARD STYLES
+    # -----------------------------------------
+    card_style = """
+        background-color: #3a3a3a;
+        color: white;
+        padding: 25px 10px;
+        border-radius: 10px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        width: 100%;
+    """
+    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
+    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
+    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+
+    col1, col2 = st.columns(2)
+
+    # CARD 1 → LATEST MONTH
+    with col1:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">₹{latest_month_revenue:,.0f}</p>
+            <p style="{units_style}">{int(latest_month_units):,} units</p>
+            <p style="{label_style}">{month_name} Revenue</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # CARD 2 → TOTAL
+    with col2:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">₹{total_revenue:,.0f}</p>
+            <p style="{units_style}">{int(total_units):,} units</p>
+            <p style="{label_style}">Total Revenue (All Months)</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # -----------------------------------------
+    # 4. CHART SECTION
+    # -----------------------------------------
+    
+    # Filter Logic (April to Latest)
+    if latest_month >= 4:
+        df_chart = df[df['order_date'].dt.month.between(4, latest_month)]
+    else:
+        # If current month is Jan/Feb/Mar, show April-Dec of prev year + Jan-Current of this year
+        # (Simplified based on your logic: just show specific months)
+        df_chart = df[
+            (df['order_date'].dt.month >= 4) | 
+            (df['order_date'].dt.month <= latest_month)
+        ]
+
+    df_monthly = df_chart.groupby('month', as_index=False).agg({
+        'revenue': 'sum',
+        'units': 'sum'
+    })
+
+    month_map = {
+        1:'January',2:'February',3:'March',4:'April',
+        5:'May',6:'June',7:'July',8:'August',
+        9:'September',10:'October',11:'November',12:'December'
+    }
+
+    month_order = (
+        [month_map[m] for m in range(4, latest_month + 1)]
+        if latest_month >= 4
+        else [month_map[m] for m in range(4, 13)] +
+             [month_map[m] for m in range(1, latest_month + 1)]
+    )
+
+    df_monthly['month'] = pd.Categorical(
+        df_monthly['month'],
+        categories=month_order,
+        ordered=True
+    )
+    df_monthly = df_monthly.sort_values('month')
+
+    # SMOOTH LINE CHART
+    fig = go.Figure()
+
+    # Revenue trace
+    fig.add_trace(go.Scatter(
+        x=df_monthly['month'],
+        y=df_monthly['revenue'],
+        mode='lines+markers',
+        name='Net Sales (INR)',
+        line=dict(color='purple', shape='spline'),
+        hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'
+    ))
+
+    # Units trace
+    fig.add_trace(go.Scatter(
+        x=df_monthly['month'],
+        y=df_monthly['units'],
+        mode='lines+markers',
+        name='Units Sold',
+        line=dict(color='green', shape='spline'),
+        yaxis='y2',
+        hovertemplate='Units: %{y:.0f} units<extra></extra>'
+    ))
+
+    fig.update_layout(
+        title=f"📈 Month-wise Sales Overview (Apr–{month_map[latest_month]})",
+        xaxis_title="Date",
+        yaxis_title="Revenue (₹)",
+        yaxis2=dict(
+            title="Units",
+            overlaying="y",
+            side="right"
+        ),
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="black",
+            font_size=13,
+            font_color="white"
+        )
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
