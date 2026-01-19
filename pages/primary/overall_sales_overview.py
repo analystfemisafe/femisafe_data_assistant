@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -6,23 +7,41 @@ from sqlalchemy import create_engine, text
 def page():
     st.title("📊 Overall Sales Overview")
     st.markdown("### Combined Performance (Shopify + Amazon)")
+    
 
     # ---------------------------------------------------------
-    # 1. DATA LOADING FUNCTION (NEON CONNECTED)
+    # 1. DATA LOADING FUNCTION (UNIVERSAL CONNECTIVITY)
     # ---------------------------------------------------------
     @st.cache_data(ttl=600)
     def get_data(query_string):
         """
         Connects to Neon and executes the specific query passed to it.
+        Works on both Local (secrets.toml) and Render (Env Vars).
         """
         try:
-            db_url = st.secrets["postgres"]["url"]
+            # --- Universal Secret Loader ---
+            try:
+                # 1. Try Local Secrets (Laptop)
+                db_url = st.secrets["postgres"]["url"]
+            except (FileNotFoundError, KeyError):
+                # 2. Try Render Environment Variable (Cloud)
+                db_url = os.environ.get("DATABASE_URL")
+            
+            # Check if URL was found
+            if not db_url:
+                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+                return pd.DataFrame()
+
+            # Create Engine
             engine = create_engine(db_url)
+            
             with engine.connect() as conn:
                 df = pd.read_sql(text(query_string), conn)
             return df
+            
         except Exception as e:
-            # If a table doesn't exist yet, return empty
+            # If a table doesn't exist yet or connection fails, return empty
+            # st.error(f"Error: {e}") # Uncomment to debug
             return pd.DataFrame()
 
     # ---------------------------------------------------------
@@ -36,7 +55,7 @@ def page():
     df_amazon = get_data("SELECT * FROM femisafe_amazon_salesdata")
 
     # ---------------------------------------------------------
-    # 3. CALCULATE & CLEAN TOTALS (The Fix 🛠️)
+    # 3. CALCULATE & CLEAN TOTALS
     # ---------------------------------------------------------
     
     # --- Function to Clean Currency Columns ---

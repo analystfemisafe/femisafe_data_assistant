@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
@@ -8,29 +9,34 @@ def page():
     st.markdown("Ask questions about your sales data in plain English!")
 
     # ---------------------------------------------------------
-    # 1. GET SECRETS (Database & AI)
+    # 1. UNIVERSAL SECRET LOADER (Database & AI Key)
     # ---------------------------------------------------------
     try:
-        # Connect to NEON (Cloud) instead of Localhost
+        # Try loading from Streamlit secrets (Local Laptop)
         db_url = st.secrets["postgres"]["url"]
-    except KeyError:
-        st.error("❌ Database URL not found in secrets.toml")
-        return
+        openai_api_key = st.secrets.get("OPENAI_API_KEY")
+    except (FileNotFoundError, KeyError):
+        # If that fails, load from Render Environment Variables
+        db_url = os.environ.get("DATABASE_URL")
+        openai_api_key = os.environ.get("OPENAI_API_KEY")
 
-    # Check for OpenAI Key (Required for the AI to talk)
-    openai_api_key = st.secrets.get("OPENAI_API_KEY")
+    # Error handling if secrets are missing
+    if not db_url:
+        st.error("❌ Database URL is missing. Check your Render Environment Variables (DATABASE_URL).")
+        st.stop()
+        
     if not openai_api_key:
-        st.warning("⚠️ OpenAI API Key missing! Please add it to .streamlit/secrets.toml")
-        # specific input for testing if key is missing
-        openai_api_key = st.text_input("Or enter OpenAI API Key here:", type="password")
+        st.warning("⚠️ OpenAI API Key is missing.")
+        # Optional: Allow manual entry if key is missing in env vars
+        openai_api_key = st.text_input("Enter OpenAI API Key manually:", type="password")
         if not openai_api_key:
+            st.info("Please enter a key to continue.")
             return
 
     # ---------------------------------------------------------
-    # 2. CONNECT TO NEON DATABASE
+    # 2. CONNECT TO DATABASE
     # ---------------------------------------------------------
     try:
-        # This connects to your Cloud Database
         db = SQLDatabase.from_uri(db_url)
     except Exception as e:
         st.error(f"⚠️ Database Connection Failed: {e}")
@@ -59,7 +65,6 @@ def page():
     # ---------------------------------------------------------
     # 4. CHAT INTERFACE
     # ---------------------------------------------------------
-    
     if "messages" not in st.session_state:
         st.session_state.messages = []
 

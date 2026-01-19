@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,17 +8,31 @@ def page():
     st.title("📦 Amazon Sales Dashboard (Live Data)")
 
     # ---------------------------------------------------------
-    # 1. LOAD DATA
+    # 1. LOAD DATA (UNIVERSAL CONNECTIVITY)
     # ---------------------------------------------------------
     @st.cache_data(ttl=600)
     def load_data():
         try:
-            db_url = st.secrets["postgres"]["url"]
+            # --- Universal Secret Loader ---
+            try:
+                # 1. Try Local Secrets (Laptop)
+                db_url = st.secrets["postgres"]["url"]
+            except (FileNotFoundError, KeyError):
+                # 2. Try Render Environment Variable (Cloud)
+                db_url = os.environ.get("DATABASE_URL")
+            
+            # Check if URL was found
+            if not db_url:
+                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+                return pd.DataFrame()
+
+            # Create Engine & Fetch Data
             engine = create_engine(db_url)
             with engine.connect() as conn:
                 query = text("SELECT * FROM femisafe_amazon_salesdata")
                 df = pd.read_sql(query, conn)
             return df
+            
         except Exception as e:
             st.error(f"⚠️ Database Connection Failed: {e}")
             return pd.DataFrame()
