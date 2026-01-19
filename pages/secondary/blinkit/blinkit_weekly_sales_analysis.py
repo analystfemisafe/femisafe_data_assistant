@@ -1,43 +1,59 @@
+import os
 import streamlit as st
 import pandas as pd
-import psycopg2
 import plotly.express as px
+from sqlalchemy import create_engine, text
 
 # ---------------------------------------------------------
-# DB FETCH
+# DB FETCH (Universal Connection)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def get_blinkit_data():
-    conn = psycopg2.connect(
-        dbname="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db",
-        host="localhost",
-        port="5432"
-    )
+    try:
+        # --- Universal Secret Loader ---
+        try:
+            # 1. Try Local Secrets (Laptop)
+            db_url = st.secrets["postgres"]["url"]
+        except (FileNotFoundError, KeyError):
+            # 2. Try Render Environment Variable (Cloud)
+            db_url = os.environ.get("DATABASE_URL")
+        
+        # Check if URL was found
+        if not db_url:
+            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+            return pd.DataFrame()
 
-    query = """
-        SELECT
-            order_date,
-            order_week,
-            sku,
-            feeder_wh,
-            net_revenue,
-            quantity
-        FROM femisafe_blinkit_salesdata
-        WHERE order_status NOT IN ('Cancelled', 'Returned');
-    """
+        # Create Engine & Fetch Data
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            query = text("""
+                SELECT
+                    order_date,
+                    order_week,
+                    sku,
+                    feeder_wh,
+                    net_revenue,
+                    quantity
+                FROM femisafe_blinkit_salesdata
+                WHERE order_status NOT IN ('Cancelled', 'Returned')
+            """)
+            df = pd.read_sql(query, conn)
+        
+        if df.empty:
+            return df
 
-    df = pd.read_sql(query, conn)
-    conn.close()
+        # Process Dates
+        df["order_date"] = pd.to_datetime(df["order_date"])
+        df["day_name"] = df["order_date"].dt.day_name()
 
-    df["order_date"] = pd.to_datetime(df["order_date"])
-    df["day_name"] = df["order_date"].dt.day_name()
+        # Sunday = 0
+        df["day_num"] = (df["order_date"].dt.weekday + 1) % 7
 
-    # Sunday = 0
-    df["day_num"] = (df["order_date"].dt.weekday + 1) % 7
+        return df
 
-    return df
+    except Exception as e:
+        st.error(f"⚠️ Database Connection Failed: {e}")
+        return pd.DataFrame()
 
 
 # ---------------------------------------------------------
@@ -49,22 +65,23 @@ def page():
 
     df = get_blinkit_data()
 
+    if df.empty:
+        st.warning("No data available in 'femisafe_blinkit_salesdata'.")
+        return
+
     # ---------------------------------------------------------
     # FILTERS
     # ---------------------------------------------------------
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        sku = st.selectbox(
-            "Select sku",
-            ["All"] + sorted(df["sku"].dropna().unique())
-        )
+        # dropna added to prevent sort errors
+        sku_list = sorted(df["sku"].dropna().unique().tolist())
+        sku = st.selectbox("Select sku", ["All"] + sku_list)
 
     with col2:
-        warehouse = st.selectbox(
-            "Select Warehouse",
-            ["All"] + sorted(df["feeder_wh"].dropna().unique())
-        )
+        wh_list = sorted(df["feeder_wh"].dropna().unique().tolist())
+        warehouse = st.selectbox("Select Warehouse", ["All"] + wh_list)
 
     with col3:
         week_limit = st.selectbox(
@@ -93,12 +110,21 @@ def page():
         .tolist()
     )
 
-    latest_weeks = sorted(
-        all_weeks,
-        key=lambda x: int(x.replace("WK", ""))
-    )[-week_limit:]
+    # Sort logic: Remove 'WK' prefix, convert to int, sort
+    try:
+        latest_weeks = sorted(
+            all_weeks,
+            key=lambda x: int(str(x).upper().replace("WK", "").strip())
+        )[-week_limit:]
+    except:
+        # Fallback if week format is unexpected
+        latest_weeks = sorted(all_weeks)[-week_limit:]
 
     filtered = filtered[filtered["order_week"].isin(latest_weeks)]
+
+    if filtered.empty:
+        st.warning("No data found for the selected weeks.")
+        return
 
     # ---------------------------------------------------------
     # AGGREGATION
@@ -194,9 +220,12 @@ def page():
     total_revenue = table_df["revenue"].sum()
 
     # Revenue %
-    table_df["revenue_pct"] = (
-        table_df["revenue"] / total_revenue * 100
-    ).round(1)
+    if total_revenue > 0:
+        table_df["revenue_pct"] = (
+            table_df["revenue"] / total_revenue * 100
+        ).round(1)
+    else:
+        table_df["revenue_pct"] = 0.0
 
     # Sort by revenue
     table_df = table_df.sort_values("revenue", ascending=False)
@@ -217,10 +246,10 @@ def page():
     # ROW HIGHLIGHTING
     # ---------------------------------------------------------
     def highlight_selected(row):
-        if row["sku"] == "TOTAL":
+        if row["sku"] == "GRAND TOTAL":
             return ["font-weight: bold"] * len(row)
         if sku != "All" and row["sku"] == sku:
-            return ["background-color: #808080"] * len(row)
+            return ["background-color: #444444"] * len(row) # Changed to slightly darker grey for better visibility
         return [""] * len(row)
 
     styled_table = (
