@@ -57,9 +57,10 @@ def page():
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     # ===================== Filter Setup =====================
-    channels = sorted(df["channels"].unique().tolist()) if "channels" in df.columns else []
-    states = sorted(df["state"].unique().tolist()) if "state" in df.columns else []
-    months = sorted(df["month"].unique().tolist()) if "month" in df.columns else []
+    # FIX: added .dropna() to remove None values before sorting
+    channels = sorted(df["channels"].dropna().unique().tolist()) if "channels" in df.columns else []
+    states = sorted(df["state"].dropna().unique().tolist()) if "state" in df.columns else []
+    months = sorted(df["month"].dropna().unique().tolist()) if "month" in df.columns else []
 
     col1, col2, col3 = st.columns(3)
 
