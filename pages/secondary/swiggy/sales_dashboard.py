@@ -1,140 +1,132 @@
-# ===========================================================
-# PAGE: SWIGGY → SALES DASHBOARD
-# ===========================================================
-
 import streamlit as st
 import pandas as pd
-import psycopg2
-import plotly.graph_objects as go
+import plotly.express as px
+from sqlalchemy import create_engine, text
 
 def page():
+    st.title("🍜 Swiggy Sales Dashboard (Live Data)")
 
-    st.title("🛵 Swiggy Sales Dashboard")
+    # ---------------------------------------------------------
+    # 1. LOAD DATA FROM NEON
+    # ---------------------------------------------------------
+    @st.cache_data(ttl=600)
+    def load_data():
+        try:
+            # Connect to Neon
+            db_url = st.secrets["postgres"]["url"]
+            engine = create_engine(db_url)
+            
+            with engine.connect() as conn:
+                # Query the lowercase Swiggy table
+                query = text("SELECT * FROM femisafe_swiggy_salesdata")
+                df = pd.read_sql(query, conn)
+            return df
+        except Exception as e:
+            st.error(f"⚠️ Database Connection Failed: {e}")
+            return pd.DataFrame()
 
-    # ===================== Fetch Swiggy Data =====================
-    @st.cache_data
-    def get_swiggy_data():
-        conn = psycopg2.connect(
-            dbname="femisafe_test_db",
-            user="ayish",
-            password="ajtp@511Db",
-            host="localhost",
-            port="5432"
-        )
-        query = """
-            SELECT 
-                ordered_date,
-                sku,
-                product,
-                units_sold,
-                city,
-                area_name,
-                l1_category,
-                l2_category,
-                l3_category,
-                month
-            FROM femisafe_swiggy_salesdata;
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df
+    df = load_data()
 
-    # Load data
-    df = get_swiggy_data()
-    df['ordered_date'] = pd.to_datetime(df['ordered_date'], errors='coerce')
+    if df.empty:
+        st.warning("⚠️ No data found. Please upload Swiggy data in the Admin Panel.")
+        return
 
-    # KPI calculations
-    total_units = df['units_sold'].sum()
+    # ---------------------------------------------------------
+    # 2. DATA CLEANING & STANDARDIZATION
+    # ---------------------------------------------------------
+    # Convert columns to lowercase to match your database
+    df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_')
 
-    latest_month = df['ordered_date'].max().strftime('%B')
-    latest_data = df[df['month'] == latest_month]
+    # Standardize 'Revenue'
+    # Swiggy often uses 'item_total', 'net_total', or 'gross_sales'
+    if 'net_total' in df.columns:
+        df['revenue'] = df['net_total']
+    elif 'item_total' in df.columns:
+        df['revenue'] = df['item_total']
+    elif 'gross_sales' in df.columns:
+        df['revenue'] = df['gross_sales']
+    else:
+        df['revenue'] = 0
 
-    latest_units = latest_data['units_sold'].sum()
+    # Standardize 'Order ID'
+    if 'order_id' not in df.columns and 'id' in df.columns:
+        df['order_id'] = df['id']
 
-    # ===================== Card Styling =====================
-    card_style = """
-        background-color: #3a3a3a;
-        color: white;
-        padding: 25px 10px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        width: 100%;
-    """
-    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
-    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
-    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+    # Standardize 'Date'
+    if 'order_date' in df.columns:
+        df['date'] = pd.to_datetime(df['order_date'], errors='coerce')
+    elif 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+    elif 'created_at' in df.columns:
+        df['date'] = pd.to_datetime(df['created_at'], errors='coerce')
 
+    # Ensure numeric values
+    df['revenue'] = pd.to_numeric(df['revenue'], errors='coerce').fillna(0)
+
+    # ---------------------------------------------------------
+    # 3. DASHBOARD METRICS
+    # ---------------------------------------------------------
+    
+    total_revenue = df['revenue'].sum()
+    total_orders = df.shape[0] # Count total rows as orders
+
+    st.markdown("### 📊 Performance Overview")
+    kpi1, kpi2 = st.columns(2)
+    kpi1.metric("💰 Total Revenue", f"₹{total_revenue:,.0f}")
+    kpi2.metric("📦 Total Orders", f"{total_orders:,}")
+
+    st.divider()
+
+    # ---------------------------------------------------------
+    # 4. CHARTS
+    # ---------------------------------------------------------
+    
     col1, col2 = st.columns(2)
 
-    # Latest month KPI
+    # Chart 1: Daily Revenue Trend
     with col1:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">{int(latest_units):,}</p>
-            <p style="{units_style}">units</p>
-            <p style="{label_style}">{latest_month} Units Sold</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.subheader("📈 Daily Revenue Trend")
+        if 'date' in df.columns and df['date'].notnull().any():
+            daily_sales = df.groupby(df['date'].dt.date)['revenue'].sum().reset_index()
+            fig_trend = px.line(
+                daily_sales, 
+                x='date', 
+                y='revenue', 
+                markers=True,
+                title="Revenue over Time",
+                color_discrete_sequence=['#FC8019'] # Swiggy Orange
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+        else:
+            st.info("Date column not found or empty.")
 
-    # Total units
+    # Chart 2: Top Items (if 'item_name' exists)
     with col2:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">{int(total_units):,}</p>
-            <p style="{units_style}">units</p>
-            <p style="{label_style}">Total Units Sold (All Months)</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.subheader("🍔 Top Selling Items")
+        item_col = None
+        # Try to find the item name column
+        possible_names = ['item_name', 'product_name', 'items', 'item']
+        for col in possible_names:
+            if col in df.columns:
+                item_col = col
+                break
+        
+        if item_col:
+            top_items = df[item_col].value_counts().head(5).reset_index()
+            top_items.columns = ['Item', 'Count']
+            fig_bar = px.bar(
+                top_items, 
+                x='Count', 
+                y='Item', 
+                orientation='h', 
+                title="Most Ordered Items",
+                color='Count',
+                color_continuous_scale='Oranges'
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("Item name column not found.")
 
-    # ===================== Units Chart: Last 30 Days =====================
-
-    df_30 = df[
-        df['ordered_date'] >= (df['ordered_date'].max() - pd.Timedelta(days=30))
-    ]
-
-    df_daily = df_30.groupby('ordered_date', as_index=False).agg({
-        'units_sold': 'sum'
-    })
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df_daily['ordered_date'],
-        y=df_daily['units_sold'],
-        mode='lines+markers',
-        name='Units Sold',
-        line=dict(color='green', width=3, shape='spline'),
-        hovertemplate='Units: %{y:,}<extra></extra>'
-    ))
-
-    fig.update_layout(
-        title=dict(text="📈 Swiggy Units Sold (Last 30 Days)", font=dict(color="black", size=18)),
-        xaxis=dict(
-            title="Date",
-            tickfont=dict(color="black"),
-            showgrid=True,
-            gridcolor="rgba(200,200,200,0.3)",
-        ),
-        yaxis=dict(
-            title="Units Sold",
-            tickfont=dict(color="green"),
-            showgrid=True,
-            gridcolor="rgba(200,200,200,0.3)",
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.25,
-            xanchor="center",
-            x=0.5
-        ),
-        template="plotly_white",
-        hovermode='x unified',
-        height=400,
-        margin=dict(l=50, r=50, t=50, b=50),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+    # Raw Data
+    with st.expander("📄 View Raw Data"):
+        st.dataframe(df.head(50))

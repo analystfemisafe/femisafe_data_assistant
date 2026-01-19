@@ -1,173 +1,130 @@
-# ===========================================================
-# PAGE: SHOPIFY → SALES DASHBOARD
-# ===========================================================
-
 import streamlit as st
 import pandas as pd
-import psycopg2
 import plotly.graph_objects as go
+from sqlalchemy import create_engine, text
 
 def page():
+    st.title("🛍️ Shopify Sales Dashboard (Live Data)")
 
-    st.title("🛍️ Shopify Sales Dashboard")
+    # ---------------------------------------------------------
+    # 1. LOAD DATA (USING LOWERCASE TABLE NAME)
+    # ---------------------------------------------------------
+    @st.cache_data(ttl=600)
+    def load_data():
+        try:
+            db_url = st.secrets["postgres"]["url"]
+            engine = create_engine(db_url)
+            
+            with engine.connect() as conn:
+                # UPDATED: Lowercase table name to match your database dump
+                query = text("SELECT * FROM femisafe_shopify_salesdata")
+                df = pd.read_sql(query, conn)
+                return df
+        except Exception as e:
+            st.error(f"⚠️ Database Connection Failed: {e}")
+            return pd.DataFrame()
 
-    # ===================== Fetch Shopify Data =====================
-    @st.cache_data
-    def get_shopify_data():
-        conn = psycopg2.connect(
-            dbname="femisafe_test_db",
-            user="ayish",
-            password="ajtp@511Db",
-            host="localhost",
-            port="5432"
-        )
-        query = """
-            SELECT 
-                order_date,
-                sku,
-                product,
-                units_sold,
-                revenue,
-                shipping_city,
-                shipping_region,
-                shipping_country,
-                month
-            FROM femisafe_shopify_salesdata;
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df
+    df = load_data()
 
-    # Load data
-    df_shopify = get_shopify_data()
-    df_shopify['order_date'] = pd.to_datetime(df_shopify['order_date'], errors='coerce')
+    if df.empty:
+        st.warning("⚠️ No data found! Please go to 'Admin Panel' and upload your Shopify CSV.")
+        return
+
+    # ---------------------------------------------------------
+    # 2. AUTO-FIX COLUMN NAMES
+    # ---------------------------------------------------------
+    # Convert all columns to lowercase to handle any mismatches
+    df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_')
+
+    # Standardize 'revenue'
+    if 'total_sales' in df.columns:
+        df['revenue'] = df['total_sales']
+    elif 'net_sales' in df.columns:
+        df['revenue'] = df['net_sales']
+    elif 'gross_sales' in df.columns:
+        df['revenue'] = df['gross_sales']
+    
+    # Standardize 'units_sold'
+    if 'quantity_ordered' in df.columns:
+        df['units_sold'] = df['quantity_ordered']
+    elif 'units_sold' not in df.columns:
+        df['units_sold'] = 0
+    
+    # Standardize 'order_date'
+    if 'day' in df.columns:
+        df['order_date'] = df['day']
+
+    # ---------------------------------------------------------
+    # 3. DATA CLEANING
+    # ---------------------------------------------------------
+    try:
+        # Convert Date (DD/MM/YY or standard)
+        df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+        
+        # Clean numeric columns
+        for col in ['revenue', 'units_sold']:
+            if col in df.columns:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].astype(str).str.replace(',', '')
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            
+    except Exception as e:
+        st.error(f"⚠️ Error cleaning data: {e}")
+        return
+
+    # ---------------------------------------------------------
+    # 4. DASHBOARD CHARTS
+    # ---------------------------------------------------------
+    
+    # Filter: Last 30 Days
+    if df['order_date'].notnull().any():
+        max_date = df['order_date'].max()
+        min_date = max_date - pd.Timedelta(days=30)
+        df_recent = df[(df['order_date'] >= min_date) & (df['order_date'] <= max_date)]
+    else:
+        df_recent = df
+        max_date = pd.Timestamp.now()
 
     # KPIs
-    total_revenue = df_shopify['revenue'].sum()
-    total_units = df_shopify['units_sold'].sum()
+    total_rev = df['revenue'].sum()
+    total_units = df['units_sold'].sum()
 
-    latest_month = df_shopify['order_date'].max().strftime('%B')
-    latest_data = df_shopify[df_shopify['month'] == latest_month]
+    st.markdown("### 📊 Performance Overview")
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("💰 Total Revenue", f"₹{total_rev:,.0f}")
+    kpi2.metric("📦 Total Units", f"{int(total_units):,}")
+    kpi3.metric("📅 Last Order Date", max_date.strftime('%d %b %Y'))
 
-    latest_revenue = latest_data['revenue'].sum()
-    latest_units = latest_data['units_sold'].sum()
+    st.divider()
 
-    # ===================== Card Styling =====================
-    card_style = """
-        background-color: #3a3a3a;
-        color: white;
-        padding: 25px 10px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        width: 100%;
-    """
-    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
-    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
-    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+    # Chart: Revenue Trend
+    st.subheader("📈 Revenue Trend (Last 30 Days)")
+    
+    if not df_recent.empty:
+        daily = df_recent.groupby('order_date')[['revenue', 'units_sold']].sum().reset_index()
 
-    col1, col2 = st.columns(2)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=daily['order_date'], y=daily['revenue'],
+            name='Revenue', marker_color='#8e44ad'
+        ))
+        fig.add_trace(go.Scatter(
+            x=daily['order_date'], y=daily['units_sold'],
+            name='Units', yaxis='y2', line=dict(color='#27ae60', width=3)
+        ))
 
-    with col1:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">₹{latest_revenue:,.0f}</p>
-            <p style="{units_style}">{int(latest_units):,} units</p>
-            <p style="{label_style}">{latest_month} Revenue</p>
-        </div>
-        """, unsafe_allow_html=True)
+        fig.update_layout(
+            xaxis=dict(title='Date'),
+            yaxis=dict(title='Revenue (₹)', showgrid=False),
+            yaxis2=dict(title='Units', overlaying='y', side='right', showgrid=False),
+            template='plotly_white',
+            hovermode='x unified',
+            height=450
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No recent data to display.")
 
-    with col2:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">{int(total_units):,}</p>
-            <p style="{units_style}">units</p>
-            <p style="{label_style}">Total Units Sold (All Months)</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ===================== Product Filter =====================
-
-    product_list = sorted(df_shopify['product'].dropna().unique())
-
-    selected_product = st.selectbox(
-        "Filter by Product",
-        options=["All Products"] + product_list,
-        index=0
-    )
-
-    # Apply filter
-    if selected_product != "All Products":
-        df_shopify = df_shopify[df_shopify['product'] == selected_product]
-
-    # ===================== Chart Section: Last 30 Days =====================
-
-    df_30 = df_shopify[
-        df_shopify['order_date'] >= (df_shopify['order_date'].max() - pd.Timedelta(days=30))
-    ]
-
-    df_daily = df_30.groupby('order_date', as_index=False).agg({
-        'revenue': 'sum',
-        'units_sold': 'sum'
-    })
-
-    fig = go.Figure()
-
-    # Revenue line
-    fig.add_trace(go.Scatter(
-        x=df_daily['order_date'],
-        y=df_daily['revenue'],
-        mode='lines+markers',
-        name='Revenue (INR)',
-        line=dict(color='purple', width=3, shape='spline'),
-        hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'
-    ))
-
-    # Units sold
-    fig.add_trace(go.Scatter(
-        x=df_daily['order_date'],
-        y=df_daily['units_sold'],
-        mode='lines+markers',
-        name='Units Sold',
-        line=dict(color='green', width=3, shape='spline'),
-        yaxis='y2',
-        hovertemplate='Units: %{y:,}<extra></extra>'
-    ))
-
-    fig.update_layout(
-        title=dict(text="📈 Shopify Sales (Last 30 Days)", font=dict(color="black", size=18)),
-        xaxis=dict(
-            title="Date",
-            tickfont=dict(color="black"),
-            showgrid=True,
-            gridcolor="rgba(200,200,200,0.3)",
-        ),
-        yaxis=dict(
-            title=dict(text="Revenue (INR)", font=dict(color="purple")),
-            tickfont=dict(color="purple"),
-            showgrid=True,
-            gridcolor="rgba(200,200,200,0.3)",
-        ),
-        yaxis2=dict(
-            title=dict(text="Units Sold", font=dict(color="green")),
-            tickfont=dict(color="green"),
-            overlaying='y',
-            side='right',
-            showgrid=False
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.25,
-            xanchor="center",
-            x=0.5
-        ),
-        template="plotly_white",
-        hovermode='x unified',
-        height=400,
-        margin=dict(l=50, r=50, t=50, b=50),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+    # Raw Data View
+    with st.expander("🔍 View Raw Data"):
+        st.dataframe(df.sort_values('order_date', ascending=False).head(50))

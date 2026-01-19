@@ -1,167 +1,105 @@
-# ===========================================================
-# PAGE: SECONDARY → AMAZON → SALES DASHBOARD
-# ===========================================================
-
 import streamlit as st
 import pandas as pd
-import psycopg2
 import plotly.graph_objects as go
+from sqlalchemy import create_engine, text
 
 def page():
+    st.title("📦 Amazon Sales Dashboard (Live Data)")
 
-    st.title("🛒 Amazon Sales Dashboard")
+    # ---------------------------------------------------------
+    # 1. LOAD DATA
+    # ---------------------------------------------------------
+    @st.cache_data(ttl=600)
+    def load_data():
+        try:
+            db_url = st.secrets["postgres"]["url"]
+            engine = create_engine(db_url)
+            with engine.connect() as conn:
+                query = text("SELECT * FROM femisafe_amazon_salesdata")
+                df = pd.read_sql(query, conn)
+            return df
+        except Exception as e:
+            st.error(f"⚠️ Database Connection Failed: {e}")
+            return pd.DataFrame()
 
-    # ===================== Get Amazon Data =====================
-    @st.cache_data
-    def get_amazon_data():
-        conn = psycopg2.connect(
-            dbname="femisafe_test_db",
-            user="ayish",
-            password="ajtp@511Db",
-            host="localhost",
-            port="5432"
-        )
-        query = """
-            SELECT
-                date,
-                sku,
-                product,
-                net_revenue,
-                units_sold
-            FROM femisafe_amazon_salesdata;
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df
+    df = load_data()
 
-    # Load data
-    df_amz = get_amazon_data()
-    df_amz['date'] = pd.to_datetime(df_amz['date'], errors='coerce')
-    df_amz['month'] = df_amz['date'].dt.strftime('%B')
+    if df.empty:
+        st.warning("⚠️ No data found.")
+        return
 
-    # KPIs
-    total_revenue = df_amz['net_revenue'].sum()
-    total_units = df_amz['units_sold'].sum()
+    # ---------------------------------------------------------
+    # 2. DATA CLEANING (Updated Fix) 🛠️
+    # ---------------------------------------------------------
+    try:
+        df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_')
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
 
-    latest_month = df_amz['date'].max().strftime('%B')
-    latest_data = df_amz[df_amz['month'] == latest_month]
+        # Identify Revenue Column
+        rev_col = None
+        if 'ordered_product_sales' in df.columns:
+            rev_col = 'ordered_product_sales'
+        elif 'gross_revenue' in df.columns:
+            rev_col = 'gross_revenue'
 
-    latest_revenue = latest_data['net_revenue'].sum()
-    latest_units = latest_data['units_sold'].sum()
+        # CLEAN REVENUE (Regex: Keep only digits and dots)
+        if rev_col:
+            df['revenue'] = df[rev_col].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df['revenue'] = pd.to_numeric(df['revenue'], errors='coerce').fillna(0)
+        else:
+            df['revenue'] = 0
 
-    # ===================== Card Styling =====================
-    card_style = """
-        background-color: #3a3a3a;
-        color: white;
-        padding: 25px 10px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        width: 100%;
-    """
-    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
-    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
-    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+        # CLEAN UNITS
+        if 'units_ordered' in df.columns:
+            df['units_ordered'] = df['units_ordered'].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df['units_ordered'] = pd.to_numeric(df['units_ordered'], errors='coerce').fillna(0)
+        
+        # CLEAN SESSIONS
+        if 'sessions_total' in df.columns:
+            df['sessions_total'] = df['sessions_total'].astype(str).str.replace(r'[^\d.]', '', regex=True)
+            df['sessions_total'] = pd.to_numeric(df['sessions_total'], errors='coerce').fillna(0)
 
+    except Exception as e:
+        st.error(f"⚠️ Data Error: {e}")
+        return
+
+    # ---------------------------------------------------------
+    # 3. METRICS
+    # ---------------------------------------------------------
+    total_rev = df['revenue'].sum()
+    total_units = df['units_ordered'].sum() if 'units_ordered' in df.columns else 0
+    total_sessions = df['sessions_total'].sum() if 'sessions_total' in df.columns else 0
+    conversion_rate = (total_units / total_sessions * 100) if total_sessions > 0 else 0
+
+    st.markdown("### 📊 Performance Overview")
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    kpi1.metric("💰 Total Sales", f"₹{total_rev:,.0f}")
+    kpi2.metric("📦 Units Ordered", f"{int(total_units):,}")
+    kpi3.metric("👀 Total Sessions", f"{int(total_sessions):,}")
+    kpi4.metric("⚡ Conversion Rate", f"{conversion_rate:.2f}%")
+
+    st.divider()
+
+    # ---------------------------------------------------------
+    # 4. CHARTS
+    # ---------------------------------------------------------
     col1, col2 = st.columns(2)
+
     with col1:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">₹{latest_revenue:,.0f}</p>
-            <p style="{units_style}">{int(latest_units):,} units</p>
-            <p style="{label_style}">{latest_month} Revenue</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.subheader("📈 Sales Trend")
+        if total_rev > 0:
+            daily_sales = df.groupby('date')['revenue'].sum().reset_index()
+            fig = go.Figure(go.Scatter(x=daily_sales['date'], y=daily_sales['revenue'], mode='lines+markers', line=dict(color='#FF9900')))
+            fig.update_layout(height=350, template='plotly_white')
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No revenue data available.")
 
     with col2:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">{int(total_units):,}</p>
-            <p style="{units_style}">units</p>
-            <p style="{label_style}">Total Units Sold (All Months)</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ===================== Product Filter =====================
-
-    product_list = sorted(df_amz['product'].dropna().unique())
-
-    selected_product = st.selectbox(
-        "Filter by Product",
-        options=["All Products"] + product_list,
-        index=0
-    )
-
-    # Apply filter
-    if selected_product != "All Products":
-        df_amz = df_amz[df_amz['product'] == selected_product]
-
-    # ===================== Chart Section =====================
-
-    df_30 = df_amz[
-        df_amz['date'] >= (df_amz['date'].max() - pd.Timedelta(days=30))
-    ]
-
-    df_daily = df_30.groupby('date', as_index=False).agg({
-        'net_revenue': 'sum',
-        'units_sold': 'sum'
-    })
-
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatter(
-        x=df_daily['date'],
-        y=df_daily['net_revenue'],
-        mode='lines+markers',
-        name='Revenue (INR)',
-        line=dict(color='purple', width=3, shape='spline'),
-        hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=df_daily['date'],
-        y=df_daily['units_sold'],
-        mode='lines+markers',
-        name='Units Sold',
-        line=dict(color='green', width=3, shape='spline'),
-        yaxis='y2',
-        hovertemplate='Units: %{y:,} units<extra></extra>'
-    ))
-
-    fig.update_layout(
-        title=dict(text="📈 Amazon Sales (Last 30 Days)", font=dict(color="black", size=18)),
-        xaxis=dict(
-            title="Date",
-            tickfont=dict(color="black"),
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 0.3)",
-        ),
-        yaxis=dict(
-            title=dict(text="Net Sales (INR)", font=dict(color="purple")),
-            tickfont=dict(color="purple"),
-            showgrid=True,
-            gridcolor="rgba(200, 200, 200, 0.3)",
-        ),
-        yaxis2=dict(
-            title=dict(text="No. of Units Sold", font=dict(color="green")),
-            tickfont=dict(color="green"),
-            overlaying="y",
-            side="right",
-            showgrid=False
-        ),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.25,
-            xanchor="center",
-            x=0.5
-        ),
-        template="plotly_white",
-        hovermode='x unified',
-        height=400,
-        margin=dict(l=50, r=50, t=50, b=50),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
+        st.subheader("🏆 Top Products (Units)")
+        if 'title' in df.columns:
+            top = df.groupby('title')['units_ordered'].sum().reset_index().sort_values('units_ordered', ascending=False).head(5)
+            top['short'] = top['title'].astype(str).str[:40] + "..."
+            fig = go.Figure(go.Bar(x=top['units_ordered'], y=top['short'], orientation='h', marker_color='#232F3E'))
+            fig.update_layout(height=350, template='plotly_white')
+            st.plotly_chart(fig, use_container_width=True)
