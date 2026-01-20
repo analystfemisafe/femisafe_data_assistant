@@ -147,7 +147,7 @@ elif mode == "Data Assistant":
     from pages.data_assistant.data_assistant import page as data_page
     data_page()
 # ------------------------------------------------------
-# 4. SMART ADMIN PANEL (Auto-Detects Tables)
+# 4. SMART ADMIN PANEL (Updated Mappings)
 # ------------------------------------------------------
 elif mode == "Admin Panel":
     st.title("⚙️ Admin Panel (Live Database)")
@@ -182,49 +182,123 @@ elif mode == "Admin Panel":
         # --- TAB 1: UPLOAD DATA ---
         with tab1:
             st.subheader("Upload New Records")
-            # Now the dropdown shows REAL tables
             selected_table = st.selectbox("Select Target Table", all_tables)
             
-            uploaded_file = st.file_uploader(f"Upload CSV for `{selected_table}`", type=["csv"])
+            uploaded_file = st.file_uploader(f"Upload CSV/Excel for `{selected_table}`", type=["csv", "xlsx"])
             
             if uploaded_file:
-                df = pd.read_csv(uploaded_file)
-                st.write("Preview:", df.head(3))
+                # Load file
+                if uploaded_file.name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
                 
-                # --- AUTO-MAPPING LOGIC ---
-                # This tries to be smart about columns regardless of table name
-                clean_table_name = selected_table.lower()
+                st.write("Preview (Raw Headers):", df.head(3))
                 
-                if "shopify" in clean_table_name:
-                    st.info(f"🔄 Detected Shopify Table: `{selected_table}`")
-                    # Shopify Mapping
-                    rename_map = {
-                        'Day': 'day', 'Sale ID': 'sale_id', 'Order name': 'order_name',
-                        'Product title at time of sale': 'product_title_at_time',
-                        'Gross sales': 'gross_sales', 'Total sales': 'total_sales',
-                        'Net sales': 'net_sales', 'Units Sold': 'units_sold',
-                        'Revenue': 'revenue', 'Product': 'product', 'Order Date': 'order_date'
-                    }
-                    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+                # --- STEP 1: CLEAN HEADERS (Remove spaces & lowercase) ---
+                # This ensures "Ad Spend Data" becomes "ad spend data" for safe matching
+                df.columns = [c.strip().lower() for c in df.columns]
 
+                # --- STEP 2: DEFINE MAPPING (Lowercase Keys Only) ---
+                clean_table_name = selected_table.lower()
+                rename_map = {} 
+
+                # 1. BLINKIT AD DATA MAPPING (Updated)
+                if "blinkit" in clean_table_name and "ad" in clean_table_name:
+                    st.info(f"🔄 Detected Blinkit Ad Table: `{selected_table}`")
+                    rename_map = {
+                        "date": "date", 
+                        "campaign id": "campaign_id", 
+                        "campaign name": "campaign_name",
+                        "targeting type": "targeting_type", 
+                        "targeting value": "targeting_value",
+                        "match type": "match_type", 
+                        "most viewed position": "most_viewed_position",
+                        "pacing type": "pacing_type", 
+                        "cpm": "cpm", 
+                        "impressions": "impressions",
+                        "clicks": "clicks",
+                        
+                        # --- NEWLY ADDED MAPPINGS ---
+                        "ad spend data": "ad_spend_data",
+                        "product name": "product_name",
+                        "week": "week",
+                        "month": "month",
+                        # ----------------------------
+
+                        "direct atc": "direct_atc", 
+                        "indirect atc": "indirect_atc",
+                        "direct quantities sold": "direct_quantities_sold",
+                        "indirect quantities sold": "indirect_quantities_sold",
+                        "estimated budget consumed": "estimated_budget_consumed",
+                        "direct sales": "direct_sales", 
+                        "indirect sales": "indirect_sales",
+                        "direct roas": "direct_roas", 
+                        "total roas": "total_roas"
+                        
+                        # "new users acquired" IS REMOVED
+                    }
+
+                # 2. BLINKIT SALES DATA MAPPING
+                elif "blinkit" in clean_table_name and "sales" in clean_table_name:
+                    st.info(f"🔄 Detected Blinkit Sales Table: `{selected_table}`")
+                    rename_map = {
+                        "order date": "order_date", "sku": "sku", "product name": "product",
+                        "feeder warehouse": "feeder_wh", "net revenue": "net_revenue", "quantity": "quantity"
+                    }
+
+                # 3. SHOPIFY MAPPING
+                elif "shopify" in clean_table_name:
+                    st.info(f"🔄 Detected Shopify Table: `{selected_table}`")
+                    rename_map = {
+                        'day': 'day', 'sale id': 'sale_id', 'order name': 'order_name',
+                        'product title at time of sale': 'product_title_at_time',
+                        'gross sales': 'gross_sales', 'total sales': 'total_sales',
+                        'net sales': 'net_sales', 'units sold': 'units_sold',
+                        'revenue': 'revenue', 'product': 'product', 'order date': 'order_date'
+                    }
+
+                # 4. AMAZON MAPPING
                 elif "amazon" in clean_table_name:
                     st.info(f"🔄 Detected Amazon Table: `{selected_table}`")
-                    # Amazon Mapping
                     rename_map = {
-                        '(Parent) ASIN': 'parent_asin', 'Title': 'title',
-                        'Ordered Product Sales': 'ordered_product_sales',
-                        'Ordered Product Sales - B2B': 'ordered_product_sales_b2b',
-                        'Units Ordered': 'units_ordered', 'Date': 'date'
+                        '(parent) asin': 'parent_asin', 'title': 'title',
+                        'ordered product sales': 'ordered_product_sales',
+                        'ordered product sales - b2b': 'ordered_product_sales_b2b',
+                        'units ordered': 'units_ordered', 'date': 'date'
                     }
+
+                # --- STEP 3: APPLY MAPPING & FILTER ---
+                if rename_map:
+                    # Rename columns found in the map
                     df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
+                    
+                    # STRICT FILTER: Keep ONLY columns that exist in the DB (the values in our map)
+                    valid_db_columns = list(rename_map.values())
+                    
+                    # Create a final dataframe with only valid columns
+                    final_df = df[[col for col in df.columns if col in valid_db_columns]].copy()
+                else:
+                    # Fallback if no specific map found
+                    final_df = df.copy()
                 
+                # --- STEP 4: DATE FORMAT FIX ---
+                date_cols = [col for col in final_df.columns if "date" in col.lower()]
+                for col in date_cols:
+                    try:
+                        final_df[col] = pd.to_datetime(final_df[col], dayfirst=True, errors='coerce')
+                    except Exception:
+                        pass
+
+                st.write("Ready for Upload (Cleaned):", final_df.head(3))
+
                 # --- UPLOAD BUTTON ---
                 if st.button("🚀 Confirm Upload"):
                     engine = get_engine()
                     if engine:
                         try:
-                            df.to_sql(selected_table, engine, if_exists='append', index=False)
-                            st.success(f"✅ Uploaded to `{selected_table}`!")
+                            final_df.to_sql(selected_table, engine, if_exists='append', index=False)
+                            st.success(f"✅ Successfully uploaded {len(final_df)} rows to `{selected_table}`!")
                         except Exception as e:
                             st.error(f"Upload failed: {e}")
 
@@ -236,7 +310,6 @@ elif mode == "Admin Panel":
             if st.button(f"Load Data for {inspect_table}"):
                 engine = get_engine()
                 with engine.connect() as conn:
-                    # We use quotes just in case the name has capitals
                     query = text(f'SELECT * FROM "{inspect_table}" LIMIT 50;')
                     try:
                         df_view = pd.read_sql(query, conn)
