@@ -1,73 +1,91 @@
+import os
 import streamlit as st
 import pandas as pd
-import psycopg2
 import numpy as np
 import plotly.graph_objects as go
+from sqlalchemy import create_engine, text
 
 def page():
     st.title("📈 Product Wise Trend Dashboard")
 
-    # ---------- DB Connection Helper ----------
-    def db_connect():
-        return psycopg2.connect(
-            dbname="femisafe_test_db",
-            user="ayish",
-            password="ajtp@511Db",
-            host="localhost",
-            port="5432"
-        )
+    # ===================== Database Connection Helper (Universal) =====================
+    def get_db_engine():
+        try:
+            # 1. Try Local Secrets (Laptop)
+            db_url = st.secrets["postgres"]["url"]
+        except (FileNotFoundError, KeyError):
+            # 2. Try Render Environment Variable (Cloud)
+            db_url = os.environ.get("DATABASE_URL")
+        
+        if not db_url:
+            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+            return None
+
+        return create_engine(db_url)
 
     # ---------- Blinkit ----------
     @st.cache_data(ttl=600)
     def get_blinkit_data():
-        conn = db_connect()
-        query = """
-            SELECT
-                order_date,
-                COALESCE(product_name, product) AS product,
-                sku,
-                quantity AS units_sold,
-                net_revenue AS revenue
-            FROM femisafe_blinkit_salesdata;
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
+        engine = get_db_engine()
+        if not engine:
+            return pd.DataFrame()
+        
+        with engine.connect() as conn:
+            query = text("""
+                SELECT
+                    order_date,
+                    COALESCE(product_name, product) AS product,
+                    sku,
+                    quantity AS units_sold,
+                    net_revenue AS revenue
+                FROM femisafe_blinkit_salesdata
+            """)
+            df = pd.read_sql(query, conn)
+        
         df["channel"] = "Blinkit"
         return df
 
     # ---------- Shopify ----------
     @st.cache_data(ttl=600)
     def get_shopify_data():
-        conn = db_connect()
-        query = """
-            SELECT
-                order_date,
-                COALESCE(product, product_title_at_time_of_sale) AS product,
-                sku,
-                units_sold,
-                revenue
-            FROM femisafe_shopify_salesdata;
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
+        engine = get_db_engine()
+        if not engine:
+            return pd.DataFrame()
+
+        with engine.connect() as conn:
+            query = text("""
+                SELECT
+                    order_date,
+                    COALESCE(product, product_title_at_time_of_sale) AS product,
+                    sku,
+                    units_sold,
+                    revenue
+                FROM femisafe_shopify_salesdata
+            """)
+            df = pd.read_sql(query, conn)
+            
         df["channel"] = "Shopify"
         return df
 
     # ---------- Amazon ----------
     @st.cache_data(ttl=600)
     def get_amazon_data():
-        conn = db_connect()
-        query = """
-            SELECT
-                date,
-                COALESCE(product, title) AS product,
-                sku,
-                units_sold,
-                COALESCE(net_revenue, gross_revenue) AS revenue
-            FROM femisafe_amazon_salesdata;
-        """
-        df = pd.read_sql(query, conn)
-        conn.close()
+        engine = get_db_engine()
+        if not engine:
+            return pd.DataFrame()
+
+        with engine.connect() as conn:
+            query = text("""
+                SELECT
+                    date,
+                    COALESCE(product, title) AS product,
+                    sku,
+                    units_sold,
+                    COALESCE(net_revenue, gross_revenue) AS revenue
+                FROM femisafe_amazon_salesdata
+            """)
+            df = pd.read_sql(query, conn)
+            
         df = df.rename(columns={"date": "order_date"})
         df["channel"] = "Amazon"
         return df
@@ -79,6 +97,10 @@ def page():
 
     # ---------- Combine ----------
     df = pd.concat([df_blink, df_shop, df_amz], ignore_index=True)
+
+    if df.empty:
+        st.warning("No data available from any channel.")
+        return
 
     # ---------- Clean ----------
     df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
@@ -96,9 +118,10 @@ def page():
     # ---------- Filters ----------
     col1, col2, col3 = st.columns(3)
 
-    months = sorted(df["month"].unique().tolist())
-    channels = sorted(df["channel"].unique().tolist())
-    products = sorted(df["product"].unique().tolist())
+    # Added dropna to avoid errors with None values
+    months = sorted(df["month"].dropna().unique().tolist())
+    channels = sorted(df["channel"].dropna().unique().tolist())
+    products = sorted(df["product"].dropna().unique().tolist())
 
     selected_months = col1.multiselect("Select Month(s)", months, default=months)
     selected_channels = col2.multiselect("Select Channel(s)", channels, default=channels)
@@ -127,12 +150,16 @@ def page():
 
     for channel in selected_channels:
         ch = agg[agg["channel"] == channel]
+        # Skip if channel data is empty after filtering
+        if ch.empty:
+            continue
+            
         fig.add_trace(
             go.Bar(
                 x=ch["date_only"],
                 y=ch["units_sold"],
                 name=f"{channel} Units",
-                marker_color=colors.get(channel),
+                marker_color=colors.get(channel, "gray"), # Fallback color
                 customdata=np.stack((ch["revenue"].values,), axis=-1),
                 hovertemplate=(
                     "<b>" + channel + "</b><br>"
@@ -147,7 +174,14 @@ def page():
         barmode="group",
         title="📦 Product-wise Units Trend (Revenue on hover)",
         height=520,
-        template="plotly_white"
+        template="plotly_white",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
 
     st.plotly_chart(fig, use_container_width=True)

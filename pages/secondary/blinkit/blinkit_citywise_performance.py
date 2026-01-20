@@ -1,37 +1,58 @@
+import os
 import streamlit as st
 import pandas as pd
-import psycopg2
+import plotly.express as px
 from datetime import timedelta
+from sqlalchemy import create_engine, text
 
 # ---------------------------------------------------------
-# Fetch Blinkit Data (COMMON FUNCTION)
+# Database Helper (Universal)
 # ---------------------------------------------------------
+def get_db_engine():
+    try:
+        # 1. Try Local Secrets (Laptop)
+        db_url = st.secrets["postgres"]["url"]
+    except (FileNotFoundError, KeyError):
+        # 2. Try Render Environment Variable (Cloud)
+        db_url = os.environ.get("DATABASE_URL")
+    
+    if not db_url:
+        st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+        return None
 
+    return create_engine(db_url)
+
+# ---------------------------------------------------------
+# Fetch Blinkit Data
+# ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def get_blinkit_data():
-    conn = psycopg2.connect(
-        dbname="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db",
-        host="localhost",
-        port="5432"
-    )
-    query = """
-        SELECT 
-            order_date,
-            sku,
-            product,
-            feeder_wh,
-            net_revenue,
-            quantity
-        FROM femisafe_blinkit_salesdata;
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame()
 
-    df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
-    df["date"] = df["order_date"].dt.date
-    return df
+    try:
+        with engine.connect() as conn:
+            query = text("""
+                SELECT 
+                    order_date,
+                    sku,
+                    product,
+                    feeder_wh,
+                    net_revenue,
+                    quantity
+                FROM femisafe_blinkit_salesdata
+            """)
+            df = pd.read_sql(query, conn)
+        
+        # Process dates
+        df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+        df["date"] = df["order_date"].dt.date
+        return df
+
+    except Exception as e:
+        st.error(f"⚠️ Database Connection Failed: {e}")
+        return pd.DataFrame()
 
 # ---------------------------------------------------------
 # PAGE FUNCTION
@@ -43,16 +64,25 @@ def page():
 
     # ===================== Get Blinkit Data =====================
     df = get_blinkit_data()
+
+    if df.empty:
+        st.warning("No data available.")
+        return
+
     df['order_date'] = pd.to_datetime(df['order_date'])
     df['date'] = df['order_date'].dt.date
 
     # Get latest, D-1, and D-7
     latest_date = df['date'].max()
-    d1_date = latest_date - pd.Timedelta(days=1)
-    d7_date = latest_date - pd.Timedelta(days=7)
+    d1_date = latest_date - timedelta(days=1)
+    d7_date = latest_date - timedelta(days=7)
 
     # Filter only relevant dates
     df_filtered = df[df['date'].isin([d7_date, d1_date, latest_date])]
+
+    if df_filtered.empty:
+        st.warning("No data found for the comparison dates.")
+        return
 
     # Aggregate
     grouped = df_filtered.groupby(['feeder_wh', 'sku', 'date']).agg({
@@ -74,15 +104,33 @@ def page():
         for i, j in pivot.columns
     ]
 
-    # Reorder columns
-    pivot = pivot[['feeder_wh', 'sku',
-                f'quantity_{d7_date.strftime("%b%d")}', f'net_revenue_{d7_date.strftime("%b%d")}',
-                f'quantity_{d1_date.strftime("%b%d")}', f'net_revenue_{d1_date.strftime("%b%d")}',
-                f'quantity_{latest_date.strftime("%b%d")}', f'net_revenue_{latest_date.strftime("%b%d")}']]
+    # Reorder columns (Check if columns exist first to prevent errors)
+    expected_cols = [
+        'feeder_wh', 'sku',
+        f'quantity_{d7_date.strftime("%b%d")}', f'net_revenue_{d7_date.strftime("%b%d")}',
+        f'quantity_{d1_date.strftime("%b%d")}', f'net_revenue_{d1_date.strftime("%b%d")}',
+        f'quantity_{latest_date.strftime("%b%d")}', f'net_revenue_{latest_date.strftime("%b%d")}'
+    ]
+    
+    # Filter out any missing columns (e.g. if one date has no sales)
+    available_cols = [col for col in expected_cols if col in pivot.columns]
+    pivot = pivot[available_cols]
 
-    # Delta columns
-    pivot['Units Delta'] = pivot[f'quantity_{latest_date.strftime("%b%d")}'] - pivot[f'quantity_{d7_date.strftime("%b%d")}']
-    pivot['Revenue Delta'] = pivot[f'net_revenue_{latest_date.strftime("%b%d")}'] - pivot[f'net_revenue_{d7_date.strftime("%b%d")}']
+    # Delta columns (Ensure columns exist before calculating)
+    q_latest = f'quantity_{latest_date.strftime("%b%d")}'
+    q_d7 = f'quantity_{d7_date.strftime("%b%d")}'
+    r_latest = f'net_revenue_{latest_date.strftime("%b%d")}'
+    r_d7 = f'net_revenue_{d7_date.strftime("%b%d")}'
+
+    if q_latest in pivot.columns and q_d7 in pivot.columns:
+        pivot['Units Delta'] = pivot[q_latest] - pivot[q_d7]
+    else:
+        pivot['Units Delta'] = 0
+
+    if r_latest in pivot.columns and r_d7 in pivot.columns:
+        pivot['Revenue Delta'] = pivot[r_latest] - pivot[r_d7]
+    else:
+        pivot['Revenue Delta'] = 0
 
     # ================== Subtotals Per Feeder ==================
     subtotal_rows = []
@@ -90,64 +138,78 @@ def page():
 
         group = group.copy()  # IMPORTANT FIX
 
-        subtotal = pd.DataFrame({
+        # Create subtotal dictionary dynamically based on available columns
+        subtotal_data = {
             'feeder_wh': [feeder],
-            'sku': [f"{feeder} Total"],
-            f'quantity_{d7_date.strftime("%b%d")}': [group[f'quantity_{d7_date.strftime("%b%d")}'].sum()],
-            f'net_revenue_{d7_date.strftime("%b%d")}': [group[f'net_revenue_{d7_date.strftime("%b%d")}'].sum()],
-            f'quantity_{d1_date.strftime("%b%d")}': [group[f'quantity_{d1_date.strftime("%b%d")}'].sum()],
-            f'net_revenue_{d1_date.strftime("%b%d")}': [group[f'net_revenue_{d1_date.strftime("%b%d")}'].sum()],
-            f'quantity_{latest_date.strftime("%b%d")}': [group[f'quantity_{latest_date.strftime("%b%d")}'].sum()],
-            f'net_revenue_{latest_date.strftime("%b%d")}': [group[f'net_revenue_{latest_date.strftime("%b%d")}'].sum()],
-        })
+            'sku': [f"{feeder} Total"]
+        }
+        
+        # Sum only the quantity/revenue columns that exist
+        for col in available_cols:
+            if "quantity" in col or "net_revenue" in col:
+                subtotal_data[col] = [group[col].sum()]
 
-        # FIXED f-string closing
-        subtotal['Units Delta'] = ( 
-            subtotal[f'quantity_{latest_date.strftime("%b%d")}'] -
-            subtotal[f'quantity_{d7_date.strftime("%b%d")}']
-        )
+        subtotal = pd.DataFrame(subtotal_data)
 
-        subtotal['Revenue Delta'] = (
-            subtotal[f'net_revenue_{latest_date.strftime("%b%d")}'] -
-            subtotal[f'net_revenue_{d7_date.strftime("%b%d")}']
-        )
+        # Recalculate Deltas for Subtotal
+        if q_latest in subtotal.columns and q_d7 in subtotal.columns:
+            subtotal['Units Delta'] = subtotal[q_latest] - subtotal[q_d7]
+        else:
+            subtotal['Units Delta'] = 0
 
-        prev = subtotal[f'net_revenue_{d7_date.strftime("%b%d")}'].iloc[0]
-        curr = subtotal[f'net_revenue_{latest_date.strftime("%b%d")}'].iloc[0]
-        subtotal['Growth %'] = 0 if prev == 0 else round(((curr - prev) / prev) * 100, 2)
+        if r_latest in subtotal.columns and r_d7 in subtotal.columns:
+            subtotal['Revenue Delta'] = subtotal[r_latest] - subtotal[r_d7]
+        else:
+            subtotal['Revenue Delta'] = 0
+
+        # Calculate Growth %
+        if r_latest in subtotal.columns and r_d7 in subtotal.columns:
+            prev = subtotal[r_d7].iloc[0]
+            curr = subtotal[r_latest].iloc[0]
+            subtotal['Growth %'] = 0 if prev == 0 else round(((curr - prev) / prev) * 100, 2)
+        else:
+            subtotal['Growth %'] = 0
 
         group['Growth %'] = ""
         subtotal_rows.append(pd.concat([group, subtotal], ignore_index=True))
 
     final_df = pd.concat(subtotal_rows, ignore_index=True)
 
-    # Convert quantities
+    # Convert quantities to int (safely)
     for col in final_df.columns:
         if "quantity" in col:
-            final_df[col] = final_df[col].astype(int)
+            final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0).astype(int)
 
-    # ================= Multi-level header formatting blinkit citywise=================
+    # ================= Multi-level header formatting =================
     date_labels = {
         d7_date.strftime("%b%d"): d7_date.strftime("%B %d"),
         d1_date.strftime("%b%d"): d1_date.strftime("%B %d"),
         latest_date.strftime("%b%d"): latest_date.strftime("%B %d"),
     }
 
-    multi_columns = pd.MultiIndex.from_tuples([
-        ('Feeder WH', ''), 
-        ('SKU', ''),
-        (date_labels[d7_date.strftime("%b%d")], 'Units'),
-        (date_labels[d7_date.strftime("%b%d")], 'Net Rev'),
-        (date_labels[d1_date.strftime("%b%d")], 'Units'),
-        (date_labels[d1_date.strftime("%b%d")], 'Net Rev'),
-        (date_labels[latest_date.strftime("%b%d")], 'Units'),
-        (date_labels[latest_date.strftime("%b%d")], 'Net Rev'),
-        ('Delta', 'Units Delta'),
-        ('Delta', 'Revenue Delta'),
-        ('Delta', 'Growth %')
-    ])
+    # Dynamic multi-index based on available columns
+    new_columns = []
+    for col in final_df.columns:
+        if col == 'feeder_wh':
+            new_columns.append(('Feeder WH', ''))
+        elif col == 'sku':
+            new_columns.append(('SKU', ''))
+        elif 'quantity_' in col:
+            date_part = col.replace('quantity_', '')
+            new_columns.append((date_labels.get(date_part, date_part), 'Units'))
+        elif 'net_revenue_' in col:
+            date_part = col.replace('net_revenue_', '')
+            new_columns.append((date_labels.get(date_part, date_part), 'Net Rev'))
+        elif col == 'Units Delta':
+            new_columns.append(('Delta', 'Units Delta'))
+        elif col == 'Revenue Delta':
+            new_columns.append(('Delta', 'Revenue Delta'))
+        elif col == 'Growth %':
+            new_columns.append(('Delta', 'Growth %'))
+        else:
+            new_columns.append(('Other', col))
 
-    final_df.columns = multi_columns
+    final_df.columns = pd.MultiIndex.from_tuples(new_columns)
 
     st.dataframe(final_df, use_container_width=True)
 
@@ -159,7 +221,6 @@ def page():
 
     col1, col2 = st.columns(2)
 
-    # FIX: use product column instead of SKU
     all_products = sorted(df['product'].dropna().unique())
     all_warehouses = sorted(df['feeder_wh'].dropna().unique())
 
@@ -180,15 +241,13 @@ def page():
 
 
     # ---------------------------------------------------------
-    # LAST 30 DAYS CHART (Fix datetime error)
+    # LAST 30 DAYS CHART
     # ---------------------------------------------------------
 
     filtered['date'] = filtered['order_date'].dt.date
 
-    # latest_date is already a datetime.date → SAFE
-    start_date = latest_date - pd.Timedelta(days=30)
+    start_date = latest_date - timedelta(days=30)
 
-    # FIX: remove .date()
     last_30 = filtered[filtered['date'] >= start_date]
 
     daily_summary = last_30.groupby('date').agg({
@@ -198,13 +257,9 @@ def page():
 
     daily_summary = daily_summary.sort_values('date')
 
-
-
     # ---------------------------------------------------------
     # BAR CHART (Units labels + revenue on hover)
     # ---------------------------------------------------------
-
-    import plotly.express as px
 
     fig = px.bar(
         daily_summary,
