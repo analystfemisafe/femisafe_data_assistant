@@ -1,40 +1,55 @@
+import os
 import streamlit as st
 import pandas as pd
-import psycopg2
+from sqlalchemy import create_engine, text
 
-# ===================== DATABASE FUNCTIONS =====================
+# ===================== DATABASE FUNCTIONS (Universal) =====================
+
+def get_db_connection():
+    """Helper function to get the database URL"""
+    try:
+        # 1. Try Local Secrets (Laptop)
+        return st.secrets["postgres"]["url"]
+    except (FileNotFoundError, KeyError):
+        # 2. Try Render Environment Variable (Cloud)
+        return os.environ.get("DATABASE_URL")
 
 @st.cache_data(ttl=600)
 def get_blinkit_addata():
     """Fetch Blinkit Ad Data from DB"""
-    conn = psycopg2.connect(
-        host="localhost",
-        database="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db"
-    )
-    query = "SELECT * FROM femisafe_blinkit_addata;"
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
+    try:
+        db_url = get_db_connection()
+        if not db_url:
+            st.error("❌ Database URL not found.")
+            return pd.DataFrame()
 
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            query = text("SELECT * FROM femisafe_blinkit_addata")
+            df = pd.read_sql(query, conn)
+        return df
+    except Exception as e:
+        st.error(f"⚠️ Error fetching Ad Data: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def get_blinkit_salesdata():
     """Fetch Blinkit Sales Data from DB"""
-    conn = psycopg2.connect(
-        host="localhost",
-        database="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db"
-    )
-    query = "SELECT * FROM femisafe_blinkit_salesdata;"
-    df = pd.read_sql(query, conn)
-    conn.close()
-    return df
+    try:
+        db_url = get_db_connection()
+        if not db_url:
+            st.error("❌ Database URL not found.")
+            return pd.DataFrame()
 
-
-
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            query = text("SELECT * FROM femisafe_blinkit_salesdata")
+            df = pd.read_sql(query, conn)
+        return df
+    except Exception as e:
+        st.error(f"⚠️ Error fetching Sales Data: {e}")
+        return pd.DataFrame()
+    
 # ===================== MAIN PAGE =====================
 def page():
 
