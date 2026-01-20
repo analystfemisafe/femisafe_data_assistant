@@ -1,48 +1,65 @@
+import os
 import streamlit as st
 import pandas as pd
-import psycopg2
 import plotly.express as px
 from datetime import timedelta
+from sqlalchemy import create_engine, text
 
 # ---------------------------------------------------------
-# DB FETCH
+# DB FETCH (Universal Connection)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def get_amazon_data():
-    conn = psycopg2.connect(
-        dbname="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db",
-        host="localhost",
-        port="5432"
-    )
+    try:
+        # --- Universal Secret Loader ---
+        try:
+            # 1. Try Local Secrets (Laptop)
+            db_url = st.secrets["postgres"]["url"]
+        except (FileNotFoundError, KeyError):
+            # 2. Try Render Environment Variable (Cloud)
+            db_url = os.environ.get("DATABASE_URL")
+        
+        # Check if URL was found
+        if not db_url:
+            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+            return pd.DataFrame(), pd.DataFrame()
 
-    sales_q = """
-        SELECT
-            date,
-            product,
-            net_revenue,
-            units_sold
-        FROM femisafe_amazon_salesdata;
-    """
+        # Define Queries
+        sales_q = """
+            SELECT
+                date,
+                product,
+                net_revenue,
+                units_sold
+            FROM femisafe_amazon_salesdata
+        """
 
-    ads_q = """
-        SELECT
-            date,
-            product,
-            spend_inr
-        FROM femisafe_amazon_addata;
-    """
+        ads_q = """
+            SELECT
+                date,
+                product,
+                spend_inr
+            FROM femisafe_amazon_addata
+        """
 
-    sales = pd.read_sql(sales_q, conn)
-    ads = pd.read_sql(ads_q, conn)
+        # Create Engine & Fetch Data
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            sales = pd.read_sql(text(sales_q), conn)
+            ads = pd.read_sql(text(ads_q), conn)
 
-    conn.close()
+        # Process Dates
+        if not sales.empty:
+            sales["date"] = pd.to_datetime(sales["date"])
+        
+        if not ads.empty:
+            ads["date"] = pd.to_datetime(ads["date"])
 
-    sales["date"] = pd.to_datetime(sales["date"])
-    ads["date"] = pd.to_datetime(ads["date"])
+        return sales, ads
 
-    return sales, ads
+    except Exception as e:
+        st.error(f"⚠️ Database Connection Failed: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
 
 # ---------------------------------------------------------
@@ -53,6 +70,10 @@ def page():
     st.markdown("### 📊 Amazon Day-wise Sales vs Ads")
 
     sales, ads = get_amazon_data()
+
+    if sales.empty or ads.empty:
+        st.warning("No data available for Sales or Ads.")
+        return
 
     # ---------------------------------------------------------
     # DATE RANGE FILTER (needed before product list)
@@ -73,7 +94,11 @@ def page():
         "Last 90 Days": 90
     }
 
-    end_date = max(sales["date"].max(), ads["date"].max())
+    # Ensure we have valid dates to calculate range
+    max_sales_date = sales["date"].max() if not sales.empty else pd.Timestamp.now()
+    max_ads_date = ads["date"].max() if not ads.empty else pd.Timestamp.now()
+    
+    end_date = max(max_sales_date, max_ads_date)
     start_date = end_date - timedelta(days=days_map[range_label])
 
     # ---------------------------------------------------------
@@ -84,19 +109,23 @@ def page():
         (ads["date"] <= end_date)
     ]
 
-    ads_daily = (
-        ads_range
-        .groupby(["date", "product"], as_index=False)
-        .agg(daily_spend=("spend_inr", "sum"))
-    )
+    # Handle case where ads_range might be empty
+    if not ads_range.empty:
+        ads_daily = (
+            ads_range
+            .groupby(["date", "product"], as_index=False)
+            .agg(daily_spend=("spend_inr", "sum"))
+        )
 
-    valid_products = (
-        ads_daily[ads_daily["daily_spend"] >= 50]
-        ["product"]
-        .dropna()
-        .unique()
-        .tolist()
-    )
+        valid_products = (
+            ads_daily[ads_daily["daily_spend"] >= 50]
+            ["product"]
+            .dropna()
+            .unique()
+            .tolist()
+        )
+    else:
+        valid_products = []
 
     # ---------------------------------------------------------
     # PRODUCT FILTER (only valid products)
@@ -126,36 +155,47 @@ def page():
     # DAY FIELDS
     # ---------------------------------------------------------
     for df in [sales_f, ads_f]:
-        df["day_name"] = df["date"].dt.day_name()
-        df["day_num"] = (df["date"].dt.weekday + 1) % 7
+        if not df.empty:
+            df["day_name"] = df["date"].dt.day_name()
+            df["day_num"] = (df["date"].dt.weekday + 1) % 7
 
     # ---------------------------------------------------------
     # AGGREGATION (DATEWISE)
     # ---------------------------------------------------------
-    sales_agg = (
-        sales_f
-        .groupby("date")
-        .agg(
-            sales_revenue=("net_revenue", "sum"),
-            units=("units_sold", "sum")
+    if not sales_f.empty:
+        sales_agg = (
+            sales_f
+            .groupby("date")
+            .agg(
+                sales_revenue=("net_revenue", "sum"),
+                units=("units_sold", "sum")
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+    else:
+        sales_agg = pd.DataFrame(columns=["date", "sales_revenue", "units"])
 
-    ads_agg = (
-        ads_f
-        .groupby("date")
-        .agg(
-            ad_spend=("spend_inr", "sum")
+    if not ads_f.empty:
+        ads_agg = (
+            ads_f
+            .groupby("date")
+            .agg(
+                ad_spend=("spend_inr", "sum")
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+    else:
+        ads_agg = pd.DataFrame(columns=["date", "ad_spend"])
 
     merged = sales_agg.merge(
         ads_agg,
         on="date",
         how="left"
     ).fillna(0)
+
+    if merged.empty:
+        st.warning("No overlapping data found for the selected range.")
+        return
 
     merged = merged.sort_values("date")
 
