@@ -1,36 +1,69 @@
+import os
 import streamlit as st
-import psycopg2
 import pandas as pd
 import plotly.graph_objects as go
-
+from sqlalchemy import create_engine, text
 
 def page():
 
     st.markdown("### 🧭 Amazon vs Shopify — Statewise Overlap")
 
-    # ✅ Connect to database and load fresh data
-    conn = psycopg2.connect(
-        dbname="femisafe_test_db",
-        user="ayish",
-        password="ajtp@511Db",
-        host="localhost",
-        port="5432"
-    )
-    df = pd.read_sql("SELECT * FROM femisafe_sales", conn)
-    conn.close()
+    # ===================== Connect to database (Universal) =====================
+    @st.cache_data(ttl=600)
+    def load_data():
+        try:
+            # --- Universal Secret Loader ---
+            try:
+                # 1. Try Local Secrets (Laptop)
+                db_url = st.secrets["postgres"]["url"]
+            except (FileNotFoundError, KeyError):
+                # 2. Try Render Environment Variable (Cloud)
+                db_url = os.environ.get("DATABASE_URL")
+            
+            # Check if URL was found
+            if not db_url:
+                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+                return pd.DataFrame()
 
-    # Normalize column names
-    df.columns = df.columns.str.strip().str.lower()
+            # Create Engine & Fetch Data
+            engine = create_engine(db_url)
+            with engine.connect() as conn:
+                query = text("SELECT * FROM femisafe_sales")
+                df = pd.read_sql(query, conn)
+            
+            # Standardize column names
+            df.columns = df.columns.str.strip().str.lower()
+            return df
+
+        except Exception as e:
+            st.error(f"⚠️ Database Connection Failed: {e}")
+            return pd.DataFrame()
+
+    df = load_data()
+
+    if df.empty:
+        st.warning("No data available.")
+        return
 
     # Clean up channels and state names
-    df["channels"] = df["channels"].str.strip().str.title()
-    df["state"] = df["state"].str.strip().str.title()
-    df["month"] = df["month"].str.strip().str.title()
-    df["products"] = df["products"].str.strip()
+    if "channels" in df.columns:
+        df["channels"] = df["channels"].astype(str).str.strip().str.title()
+    if "state" in df.columns:
+        df["state"] = df["state"].astype(str).str.strip().str.title()
+    if "month" in df.columns:
+        df["month"] = df["month"].astype(str).str.strip().str.title()
+    if "products" in df.columns:
+        df["products"] = df["products"].astype(str).str.strip()
+    
+    # Ensure numerics
+    for col in ["sku_units", "revenue"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
     # ===================== Filters =====================
-    months = sorted(df["month"].dropna().unique().tolist())
-    products = sorted(df["products"].dropna().unique().tolist())
+    # Add dropna to prevent sort errors
+    months = sorted(df["month"].dropna().unique().tolist()) if "month" in df.columns else []
+    products = sorted(df["products"].dropna().unique().tolist()) if "products" in df.columns else []
     top_options = ["Top 5", "Top 10", "Top 15", "All"]
 
     col1, col2, col3 = st.columns(3)
@@ -45,13 +78,18 @@ def page():
     # ===================== Filter Data =====================
     df_filtered = df.copy()
 
-    if selected_month != "All":
+    if selected_month != "All" and "month" in df.columns:
         df_filtered = df_filtered[df_filtered["month"] == selected_month]
-    if selected_product != "All":
+    if selected_product != "All" and "products" in df.columns:
         df_filtered = df_filtered[df_filtered["products"] == selected_product]
 
     # Keep only Amazon and Shopify
-    df_filtered = df_filtered[df_filtered["channels"].isin(["Amazon", "Shopify"])]
+    if "channels" in df_filtered.columns:
+        df_filtered = df_filtered[df_filtered["channels"].isin(["Amazon", "Shopify"])]
+
+    if df_filtered.empty:
+        st.warning("No data for Amazon/Shopify with these filters.")
+        return
 
     # ===================== Aggregate =====================
     overlap_summary = (
@@ -72,17 +110,14 @@ def page():
         overlap_pivot = overlap_pivot.head(n)
 
     # ===================== Totals for Shopify & Amazon =====================
-    if not df_filtered.empty:
-        shopify_data = df_filtered[df_filtered["channels"].str.lower() == "shopify"]
-        amazon_data = df_filtered[df_filtered["channels"].str.lower() == "amazon"]
+    shopify_data = df_filtered[df_filtered["channels"] == "Shopify"]
+    amazon_data = df_filtered[df_filtered["channels"] == "Amazon"]
 
-        shopify_units = shopify_data["sku_units"].sum()
-        amazon_units = amazon_data["sku_units"].sum()
+    shopify_units = shopify_data["sku_units"].sum()
+    amazon_units = amazon_data["sku_units"].sum()
 
-        shopify_revenue = shopify_data["revenue"].sum()
-        amazon_revenue = amazon_data["revenue"].sum()
-    else:
-        shopify_units = amazon_units = shopify_revenue = amazon_revenue = 0
+    shopify_revenue = shopify_data["revenue"].sum()
+    amazon_revenue = amazon_data["revenue"].sum()
 
     # ===================== Card Styling =====================
     card_style = """
