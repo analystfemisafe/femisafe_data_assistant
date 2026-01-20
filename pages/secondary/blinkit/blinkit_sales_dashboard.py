@@ -1,17 +1,20 @@
 import os
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 from sqlalchemy import create_engine, text
 
-def page():
-    st.title("🟡 Blinkit Sales Dashboard (Live Data)")
+# ===========================================================
+# PAGE: SECONDARY → BLINKIT → SALES DASHBOARD
+# ===========================================================
 
-    # ---------------------------------------------------------
-    # 1. LOAD DATA FROM NEON (UNIVERSAL CONNECTIVITY)
-    # ---------------------------------------------------------
+def page():
+
+    st.title("📦 Blinkit Sales Dashboard")
+
+    # ===================== Get Blinkit Data (Universal) =====================
     @st.cache_data(ttl=600)
-    def load_data():
+    def get_blinkit_data():
         try:
             # --- Universal Secret Loader ---
             try:
@@ -29,8 +32,16 @@ def page():
             # Create Engine & Fetch Data
             engine = create_engine(db_url)
             with engine.connect() as conn:
-                # Query the lowercase Blinkit table
-                query = text("SELECT * FROM femisafe_blinkit_salesdata")
+                query = text("""
+                    SELECT 
+                        order_date,
+                        sku,
+                        feeder_wh,
+                        net_revenue,
+                        product,
+                        quantity
+                    FROM femisafe_blinkit_salesdata
+                """)
                 df = pd.read_sql(query, conn)
             return df
             
@@ -38,116 +49,153 @@ def page():
             st.error(f"⚠️ Database Connection Failed: {e}")
             return pd.DataFrame()
 
-    df = load_data()
+    # Load data
+    df_blinkit = get_blinkit_data()
 
-    if df.empty:
-        st.warning("⚠️ No data found. Please upload Blinkit data in the Admin Panel.")
+    if df_blinkit.empty:
+        st.warning("No Blinkit data available.")
         return
 
-    # ---------------------------------------------------------
-    # 2. DATA CLEANING (The Fix 🛠️)
-    # ---------------------------------------------------------
-    try:
-        # Convert all headers to lowercase
-        df.columns = df.columns.str.lower().str.strip().str.replace(' ', '_')
+    # Process Dates
+    df_blinkit['order_date'] = pd.to_datetime(df_blinkit['order_date'], errors='coerce')
+    df_blinkit['month'] = df_blinkit['order_date'].dt.strftime('%B')
 
-        # Identify Revenue Column
-        rev_col = None
-        if 'item_total' in df.columns:
-            rev_col = 'item_total'
-        elif 'net_sales' in df.columns:
-            rev_col = 'net_sales'
-        elif 'gross_amount' in df.columns:
-            rev_col = 'gross_amount'
-        elif 'revenue' in df.columns:
-            rev_col = 'revenue'
+    # ===================== KPIs =====================
+    total_revenue = df_blinkit['net_revenue'].sum()
+    total_units = df_blinkit['quantity'].sum()
 
-        # CLEAN REVENUE (Remove ₹, commas, spaces)
-        if rev_col:
-            # This Regex keeps ONLY numbers (0-9) and dots (.)
-            df['revenue'] = df[rev_col].astype(str).str.replace(r'[^\d.]', '', regex=True)
-            df['revenue'] = pd.to_numeric(df['revenue'], errors='coerce').fillna(0)
-        else:
-            df['revenue'] = 0
+    latest_date = df_blinkit['order_date'].max()
+    if pd.isnull(latest_date):
+        latest_month = "Unknown"
+        latest_revenue = 0
+        latest_units = 0
+    else:
+        latest_month = latest_date.strftime('%B')
+        latest_data = df_blinkit[df_blinkit['month'] == latest_month]
+        latest_revenue = latest_data['net_revenue'].sum()
+        latest_units = latest_data['quantity'].sum()
 
-        # CLEAN UNITS (Remove commas)
-        unit_col = None
-        if 'quantity' in df.columns:
-            unit_col = 'quantity'
-        elif 'qty' in df.columns:
-            unit_col = 'qty'
-        
-        if unit_col:
-            df['units_sold'] = df[unit_col].astype(str).str.replace(r'[^\d.]', '', regex=True)
-            df['units_sold'] = pd.to_numeric(df['units_sold'], errors='coerce').fillna(0)
-        else:
-            df['units_sold'] = 0
+    # ===================== Card Styling =====================
+    card_style = """
+        background-color: #3a3a3a;
+        color: white;
+        padding: 25px 10px;
+        border-radius: 10px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        width: 100%;
+    """
+    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
+    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
+    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
 
-        # Standardize Date
-        if 'order_date' in df.columns:
-            df['date'] = pd.to_datetime(df['order_date'], errors='coerce')
-        elif 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-
-    except Exception as e:
-        st.error(f"⚠️ Data Cleaning Error: {e}")
-        return
-
-    # ---------------------------------------------------------
-    # 3. DASHBOARD METRICS
-    # ---------------------------------------------------------
-    
-    total_rev = df['revenue'].sum()
-    total_units = df['units_sold'].sum()
-
-    st.markdown("### 📊 Performance Overview")
-    kpi1, kpi2 = st.columns(2)
-    kpi1.metric("💰 Total Revenue", f"₹{total_rev:,.0f}")
-    kpi2.metric("📦 Total Units Sold", f"{int(total_units):,}")
-
-    st.divider()
-
-    # ---------------------------------------------------------
-    # 4. CHARTS
-    # ---------------------------------------------------------
-    
     col1, col2 = st.columns(2)
-
-    # Chart 1: Sales Trend
     with col1:
-        st.subheader("📈 Sales Trend")
-        if 'date' in df.columns and df['date'].notnull().any() and total_rev > 0:
-            daily_sales = df.groupby(df['date'].dt.date)['revenue'].sum().reset_index()
-            fig_trend = px.line(
-                daily_sales, 
-                x='date', y='revenue', markers=True,
-                title="Revenue over Time",
-                color_discrete_sequence=['#F4C430']
-            )
-            st.plotly_chart(fig_trend, use_container_width=True)
-        else:
-            st.info("No revenue trend data available.")
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">₹{latest_revenue:,.0f}</p>
+            <p style="{units_style}">{int(latest_units):,} units</p>
+            <p style="{label_style}">{latest_month} Revenue</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Chart 2: Top Products
     with col2:
-        st.subheader("🏆 Top Products")
-        # Identify Product Name Column
-        prod_col = None
-        for col in ['item_name', 'product_name', 'product', 'item']:
-            if col in df.columns:
-                prod_col = col
-                break
-        
-        if prod_col:
-            top_products = df.groupby(prod_col)['revenue'].sum().reset_index().sort_values(by='revenue', ascending=False).head(5)
-            top_products['short_name'] = top_products[prod_col].astype(str).str[:30] + "..."
-            
-            fig_bar = px.bar(
-                top_products, 
-                x='revenue', y='short_name', orientation='h',
-                title="Top 5 Products by Revenue",
-                color='revenue', color_continuous_scale='YlOrBr'
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-        else:
-            st.info("Product Name column missing.")
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">{int(total_units):,}</p>
+            <p style="{units_style}">units</p>
+            <p style="{label_style}">Total Units Sold (All Months)</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ===================== Product Filter =====================
+
+    # Create a sorted product list (added dropna)
+    product_list = sorted(df_blinkit['product'].dropna().unique())
+
+    # Single-select dropdown
+    selected_product = st.selectbox(
+        "Filter by Product",
+        options=["All Products"] + product_list,
+        index=0
+    )
+
+    # Apply filter
+    if selected_product != "All Products":
+        df_blinkit = df_blinkit[df_blinkit['product'] == selected_product]
+
+    # ===================== Chart Section =====================
+
+    if df_blinkit.empty:
+        st.warning("No data for this selection.")
+        return
+
+    # Last 30 days filter based on MAX date in data
+    max_date = df_blinkit['order_date'].max()
+    df_blinkit_30 = df_blinkit[
+        df_blinkit['order_date'] >= (max_date - pd.Timedelta(days=30))
+    ]
+
+    df_daily = df_blinkit_30.groupby('order_date', as_index=False).agg({
+        'net_revenue': 'sum',
+        'quantity': 'sum'
+    })
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=df_daily['order_date'],
+        y=df_daily['net_revenue'],
+        mode='lines+markers',
+        name='Revenue (INR)',
+        line=dict(color='purple', width=3, shape='spline'),
+        hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df_daily['order_date'],
+        y=df_daily['quantity'],
+        mode='lines+markers',
+        name='Units Sold',
+        line=dict(color='green', width=3, shape='spline'),
+        yaxis='y2',
+        hovertemplate='Units: %{y:,} units<extra></extra>'
+    ))
+
+    fig.update_layout(
+        title=dict(text="📈 Blinkit Sales (Last 30 Days)", font=dict(color="black", size=18)),
+        xaxis=dict(
+            title="Date",
+            tickfont=dict(color="black"),
+            showgrid=True,
+            gridcolor="rgba(200, 200, 200, 0.3)",
+        ),
+        yaxis=dict(
+            title=dict(text="Net Sales (INR)", font=dict(color="purple")),
+            tickfont=dict(color="purple"),
+            showgrid=True,
+            gridcolor="rgba(200, 200, 200, 0.3)",
+        ),
+        yaxis2=dict(
+            title=dict(text="No. of Units Sold", font=dict(color="green")),
+            tickfont=dict(color="green"),
+            overlaying="y",
+            side="right",
+            showgrid=False
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5
+        ),
+        template="plotly_white",
+        hovermode='x unified',
+        height=400,
+        margin=dict(l=50, r=50, t=50, b=50),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
