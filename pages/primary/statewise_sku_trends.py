@@ -30,8 +30,7 @@ def page():
             # Create Engine & Fetch Data
             engine = create_engine(db_url)
             with engine.connect() as conn:
-                # Using the exact table name you provided
-                query = text("SELECT * FROM femisafe_sales")
+                query = text("SELECT * FROM femisafe_sales;")
                 df = pd.read_sql(query, conn)
             return df
             
@@ -40,24 +39,19 @@ def page():
             return pd.DataFrame()
 
     df = get_sales_data()
-
+    
     if df.empty:
-        st.warning("⚠️ No data found in 'femisafe_sales' table.")
+        st.warning("No sales data available.")
         return
 
-    # Clean Channels column if it exists
-    if "channels" in df.columns:
-        df["channels"] = df["channels"].astype(str).str.strip().str.title()
-    else:
-        st.error("Column 'channels' missing in database.")
-        return
+    # Normalize data
+    df["channels"] = df["channels"].str.strip().str.title()
+    df["state"] = df["state"].str.strip().str.title()
 
     # ===================== Filter Options =====================
     channels = sorted(df["channels"].dropna().unique().tolist())
-    
-    # Handle missing columns gracefully
-    products = sorted(df["products"].dropna().unique().tolist()) if "products" in df.columns else []
-    months = sorted(df["month"].dropna().unique().tolist()) if "month" in df.columns else []
+    products = sorted(df["products"].dropna().unique().tolist())
+    months = sorted(df["month"].dropna().unique().tolist())
 
     col1, col2, col3 = st.columns(3)
 
@@ -76,24 +70,16 @@ def page():
     if selected_channel != "All":
         df_filtered = df_filtered[df_filtered["channels"] == selected_channel]
 
-    if selected_product != "All" and "products" in df.columns:
+    if selected_product != "All":
         df_filtered = df_filtered[df_filtered["products"] == selected_product]
 
-    if selected_month != "All" and "month" in df.columns:
+    if selected_month != "All":
         df_filtered = df_filtered[df_filtered["month"] == selected_month]
 
-    # Normalize state column
-    if "state" in df_filtered.columns:
-        df_filtered["state"] = df_filtered["state"].astype(str).str.strip().str.title()
-    else:
-        st.warning("State column missing.")
-        return
-
     # ===================== Grouped Summary =====================
-    # Ensure numeric columns are actually numeric
-    for col in ["sku_units", "revenue"]:
-        if col in df_filtered.columns:
-            df_filtered[col] = pd.to_numeric(df_filtered[col], errors='coerce').fillna(0)
+    if df_filtered.empty:
+        st.warning("No data found for the selected filters.")
+        return
 
     summary = (
         df_filtered.groupby("state", as_index=False)
@@ -136,5 +122,6 @@ def page():
             "Units Sold": "{:,.0f}",
             "Revenue": "₹{:,.2f}",
             "Revenue_%": "{:.2f}%"
-        })
+        }),
+        use_container_width=True
     )
