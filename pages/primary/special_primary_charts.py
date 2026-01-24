@@ -1,42 +1,62 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
 
 def page():
 
-    st.markdown("### 🧭 Amazon vs Shopify — Statewise Overlap")
+    st.markdown("### 🧭 Amazon vs Shopify — Statewise Overlap (Optimized)")
 
-    # ===================== Connect to database (Universal) =====================
-    @st.cache_data(ttl=600)
+    # ===================== Connect to database (Optimized) =====================
+    @st.cache_data(ttl=900)
     def load_data():
-        try:
-            # --- Universal Secret Loader ---
-            try:
-                # 1. Try Local Secrets (Laptop)
-                db_url = st.secrets["postgres"]["url"]
-            except (FileNotFoundError, KeyError):
-                # 2. Try Render Environment Variable (Cloud)
-                db_url = os.environ.get("DATABASE_URL")
-            
-            # Check if URL was found
-            if not db_url:
-                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-                return pd.DataFrame()
+        engine = get_db_engine()
+        if not engine:
+            return pd.DataFrame()
 
-            # Create Engine & Fetch Data
-            engine = create_engine(db_url)
+        try:
             with engine.connect() as conn:
-                query = text("SELECT * FROM femisafe_sales")
+                # ⚡ SQL OPTIMIZATION: Select only needed columns
+                query = text("SELECT channels, state, month, products, sku_units, revenue FROM femisafe_sales")
                 df = pd.read_sql(query, conn)
             
+            if df.empty: return df
+
             # Standardize column names
             df.columns = df.columns.str.strip().str.lower()
+
+            # =========================================================
+            # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+            # =========================================================
+
+            # 1. Fast Vectorized Cleaning (Numerics)
+            for col in ["sku_units", "revenue"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+            # 2. Optimize Text to Category (Instant Filtering)
+            # Convert these columns to category type for faster grouping and filtering
+            text_cols = ["channels", "state", "month", "products"]
+            for col in text_cols:
+                if col in df.columns:
+                    # Clean string and convert to category
+                    df[col] = df[col].astype(str).str.strip().str.title().astype('category')
+            
             return df
 
         except Exception as e:
-            st.error(f"⚠️ Database Connection Failed: {e}")
+            st.error(f"⚠️ Data Load Error: {e}")
             return pd.DataFrame()
 
     df = load_data()
@@ -45,25 +65,10 @@ def page():
         st.warning("No data available.")
         return
 
-    # Clean up channels and state names
-    if "channels" in df.columns:
-        df["channels"] = df["channels"].astype(str).str.strip().str.title()
-    if "state" in df.columns:
-        df["state"] = df["state"].astype(str).str.strip().str.title()
-    if "month" in df.columns:
-        df["month"] = df["month"].astype(str).str.strip().str.title()
-    if "products" in df.columns:
-        df["products"] = df["products"].astype(str).str.strip()
-    
-    # Ensure numerics
-    for col in ["sku_units", "revenue"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
     # ===================== Filters =====================
-    # Add dropna to prevent sort errors
-    months = sorted(df["month"].dropna().unique().tolist()) if "month" in df.columns else []
-    products = sorted(df["products"].dropna().unique().tolist()) if "products" in df.columns else []
+    # Getting unique values from Categories is extremely fast
+    months = sorted(list(df["month"].unique())) if "month" in df.columns else []
+    products = sorted(list(df["products"].unique())) if "products" in df.columns else []
     top_options = ["Top 5", "Top 10", "Top 15", "All"]
 
     col1, col2, col3 = st.columns(3)
@@ -76,6 +81,7 @@ def page():
         selected_top = st.selectbox("🏆 Show", options=top_options, index=1)
 
     # ===================== Filter Data =====================
+    # Filtering on Category types is faster
     df_filtered = df.copy()
 
     if selected_month != "All" and "month" in df.columns:
@@ -92,9 +98,10 @@ def page():
         return
 
     # ===================== Aggregate =====================
+    # observed=True makes groupby on categories faster
     overlap_summary = (
-        df_filtered.groupby(["state", "channels"], as_index=False)
-        .agg({"sku_units": "sum"})
+        df_filtered.groupby(["state", "channels"], observed=True, as_index=False)
+        .agg({"sku_units": "sum", "revenue": "sum"})
     )
 
     # Pivot so that channels are columns
@@ -110,14 +117,14 @@ def page():
         overlap_pivot = overlap_pivot.head(n)
 
     # ===================== Totals for Shopify & Amazon =====================
-    shopify_data = df_filtered[df_filtered["channels"] == "Shopify"]
-    amazon_data = df_filtered[df_filtered["channels"] == "Amazon"]
+    shopify_stats = df_filtered[df_filtered["channels"] == "Shopify"][["sku_units", "revenue"]].sum()
+    amazon_stats = df_filtered[df_filtered["channels"] == "Amazon"][["sku_units", "revenue"]].sum()
 
-    shopify_units = shopify_data["sku_units"].sum()
-    amazon_units = amazon_data["sku_units"].sum()
-
-    shopify_revenue = shopify_data["revenue"].sum()
-    amazon_revenue = amazon_data["revenue"].sum()
+    shopify_units = shopify_stats["sku_units"]
+    shopify_revenue = shopify_stats["revenue"]
+    
+    amazon_units = amazon_stats["sku_units"]
+    amazon_revenue = amazon_stats["revenue"]
 
     # ===================== Card Styling =====================
     card_style = """

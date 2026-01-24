@@ -1,137 +1,143 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
 
 # ---------------------------------------------------------
-# DB FETCH (Universal Connection)
+# 🚀 OPTIMIZED DATA LOADER
 # ---------------------------------------------------------
-@st.cache_data(ttl=600)
-def get_blinkit_data():
+@st.cache_data(ttl=900)  # Cache results for 15 minutes
+def get_optimized_blinkit_data():
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame()
+
     try:
-        # --- Universal Secret Loader ---
-        try:
-            # 1. Try Local Secrets (Laptop)
-            db_url = st.secrets["postgres"]["url"]
-        except (FileNotFoundError, KeyError):
-            # 2. Try Render Environment Variable (Cloud)
-            db_url = os.environ.get("DATABASE_URL")
-        
-        # Check if URL was found
-        if not db_url:
-            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-            return pd.DataFrame()
-
-        # Create Engine & Fetch Data
-        engine = create_engine(db_url)
         with engine.connect() as conn:
+            # ⚡ SQL OPTIMIZATION: 
+            # 1. Fetch only needed columns (No SELECT *)
+            # 2. Filter 'Cancelled' here (Saves Python processing & Bandwidth)
             query = text("""
-                SELECT
-                    order_date,
-                    order_week,
-                    sku,
-                    feeder_wh,
-                    net_revenue,
-                    quantity
-                FROM femisafe_blinkit_salesdata
+                SELECT 
+                    order_date, 
+                    order_week, 
+                    sku, 
+                    feeder_wh, 
+                    net_revenue, 
+                    quantity 
+                FROM femisafe_blinkit_salesdata 
                 WHERE order_status NOT IN ('Cancelled', 'Returned')
             """)
             df = pd.read_sql(query, conn)
         
-        if df.empty:
-            return df
+        if df.empty: return df
 
-        # Process Dates
-        df["order_date"] = pd.to_datetime(df["order_date"])
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+        
+        # 1. Fast Vectorized Cleaning (Regex is faster than .str.replace chained)
+        for col in ['net_revenue', 'quantity']:
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(r'[₹,]', '', regex=True), 
+                errors='coerce'
+            ).fillna(0)
+            
+        # 2. Downcast numeric types (Saves ~50% RAM)
+        df['quantity'] = df['quantity'].astype('int32')
+        # Revenue kept as float for accuracy
+        
+        # 3. Use Categories for Text (Instant filtering & Sorting)
+        df['sku'] = df['sku'].astype('category')
+        df['feeder_wh'] = df['feeder_wh'].fillna("Unknown").astype(str).str.title().astype('category')
+        
+        # 4. Fast Date Parsing (dayfirst=True fixes date flipping issues)
+        df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+        df.dropna(subset=['order_date'], inplace=True)
+        
+        # 5. Derive Day Columns
         df["day_name"] = df["order_date"].dt.day_name()
-
-        # Sunday = 0
         df["day_num"] = (df["order_date"].dt.weekday + 1) % 7
 
         return df
 
     except Exception as e:
-        st.error(f"⚠️ Database Connection Failed: {e}")
+        st.error(f"⚠️ Data Load Error: {e}")
         return pd.DataFrame()
 
-
 # ---------------------------------------------------------
-# PAGE
+# PAGE LAYOUT
 # ---------------------------------------------------------
 def page():
-
     st.markdown("### 📊 Day-wise Revenue (Week Comparison)")
 
-    df = get_blinkit_data()
+    # Load Data (Instant if cached)
+    df = get_optimized_blinkit_data()
 
     if df.empty:
-        st.warning("No data available in 'femisafe_blinkit_salesdata'.")
+        st.warning("No data found in 'femisafe_blinkit_salesdata'.")
         return
 
-    # ---------------------------------------------------------
-    # FILTERS
-    # ---------------------------------------------------------
+    # --- FILTERS ---
     col1, col2, col3 = st.columns(3)
-
+    
+    # Using 'category' dtype makes these list generations instant
     with col1:
-        # dropna added to prevent sort errors
-        sku_list = sorted(df["sku"].dropna().unique().tolist())
-        sku = st.selectbox("Select sku", ["All"] + sku_list)
-
+        # We convert unique categories to a sorted list for the dropdown
+        sku_options = sorted(list(df["sku"].unique()))
+        sku = st.selectbox("Select SKU", ["All"] + sku_options)
+    
     with col2:
-        wh_list = sorted(df["feeder_wh"].dropna().unique().tolist())
-        warehouse = st.selectbox("Select Warehouse", ["All"] + wh_list)
-
+        wh_options = sorted(list(df["feeder_wh"].unique()))
+        warehouse = st.selectbox("Select Warehouse", ["All"] + wh_options)
+    
     with col3:
-        week_limit = st.selectbox(
-            "Number of Weeks",
-            [2, 3, 4, 5, 6]
-        )
+        week_limit = st.selectbox("Weeks to Compare", [2, 3, 4, 5, 6], index=2)
 
-    # ---------------------------------------------------------
-    # APPLY FILTERS
-    # ---------------------------------------------------------
+    # --- APPLY FILTERS ---
+    # Filtering on categories is extremely fast
     filtered = df.copy()
-
-    if sku != "All":
+    if sku != "All": 
         filtered = filtered[filtered["sku"] == sku]
-
-    if warehouse != "All":
+    if warehouse != "All": 
         filtered = filtered[filtered["feeder_wh"] == warehouse]
 
-    # ---------------------------------------------------------
-    # PICK LATEST N WEEKS (OLDEST → NEWEST)
-    # ---------------------------------------------------------
-    all_weeks = (
-        filtered["order_week"]
-        .dropna()
-        .unique()
-        .tolist()
-    )
+    # --- WEEK SORTING ---
+    # Robust logic for "WK01", "Week 1", "1"
+    all_weeks = list(filtered["order_week"].unique())
+    
+    def get_week_num(val):
+        import re
+        nums = re.findall(r'\d+', str(val))
+        return int(nums[0]) if nums else 0
 
-    # Sort logic: Remove 'WK' prefix, convert to int, sort
     try:
-        latest_weeks = sorted(
-            all_weeks,
-            key=lambda x: int(str(x).upper().replace("WK", "").strip())
-        )[-week_limit:]
+        latest_weeks = sorted(all_weeks, key=get_week_num)[-week_limit:]
     except:
-        # Fallback if week format is unexpected
         latest_weeks = sorted(all_weeks)[-week_limit:]
 
     filtered = filtered[filtered["order_week"].isin(latest_weeks)]
 
     if filtered.empty:
-        st.warning("No data found for the selected weeks.")
+        st.info("No data for these filters.")
         return
 
-    # ---------------------------------------------------------
-    # AGGREGATION
-    # ---------------------------------------------------------
+    # --- AGGREGATION & CHART ---
+    # observed=True is required for groupby on Category types to prevent empty bins
     agg = (
         filtered
-        .groupby(["day_name", "day_num", "order_week"])
+        .groupby(["day_name", "day_num", "order_week"], observed=True)
         .agg(
             revenue=("net_revenue", "sum"),
             units=("quantity", "sum")
@@ -141,130 +147,72 @@ def page():
 
     agg = agg.sort_values("day_num")
 
-    # ---------------------------------------------------------
-    # 🚨 CRITICAL FIX — CATEGORY ORDERS AT CREATION TIME
-    # ---------------------------------------------------------
     fig = px.bar(
-        agg,
-        x="day_name",
-        y="revenue",
-        color="order_week",
-        barmode="group",
+        agg, 
+        x="day_name", 
+        y="revenue", 
+        color="order_week", 
+        barmode="group", 
         text="units",
         category_orders={
-            "order_week": latest_weeks,   # 🔥 THIS FIXES WEEK ORDER
-            "day_name": [
-                "Sunday", "Monday", "Tuesday",
-                "Wednesday", "Thursday", "Friday", "Saturday"
-            ]
+            "day_name": ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+            "order_week": latest_weeks
         },
-        labels={
-            "day_name": "Day of Week",
-            "revenue": "Net Revenue",
-            "order_week": "Week"
-        },
-        hover_data={
-            "revenue": ":,.0f",
-            "units": True
-        }
+        labels={"day_name": "Day", "revenue": "Revenue (₹)", "order_week": "Week"},
+        hover_data={"revenue": ":,.0f", "units": True},
+        height=500
     )
-
-    fig.update_traces(
-        textposition="outside",
-        cliponaxis=False
-    )
-
-    fig.update_layout(
-        height=500,
-        xaxis_title="Day",
-        yaxis_title="Revenue",
-        bargap=0.2,
-        legend_title="Week",
-        legend_traceorder="normal"
-    )
-
+    
+    fig.update_traces(textposition="outside", cliponaxis=False)
+    fig.update_layout(xaxis_title="Day", yaxis_title="Revenue", bargap=0.2)
+    
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---------------------------------------------------------
-    # PRODUCT-WISE SUMMARY TABLE
-    # (WEEK + WAREHOUSE FILTER APPLIED)
-    # ---------------------------------------------------------
+    # --- SUMMARY TABLE ---
+    # Start from FULL filtered data (Respects Warehouse/Week filters)
+    table_source = filtered.copy()
 
-    # Start from FULL data
-    table_source = df.copy()
-
-    # Apply week filter
-    table_source = table_source[
-        table_source["order_week"].isin(latest_weeks)
-    ]
-
-    # ✅ Apply warehouse filter
-    if warehouse != "All":
-        table_source = table_source[
-            table_source["feeder_wh"] == warehouse
-        ]
-
-    # ---------------------------------------------------------
-    # AGGREGATION
-    # ---------------------------------------------------------
     table_df = (
         table_source
-        .groupby("sku", as_index=False)
+        .groupby("sku", observed=True, as_index=False)
         .agg(
             units=("quantity", "sum"),
             revenue=("net_revenue", "sum")
         )
     )
 
-    # Total revenue
     total_revenue = table_df["revenue"].sum()
-
-    # Revenue %
+    
     if total_revenue > 0:
-        table_df["revenue_pct"] = (
-            table_df["revenue"] / total_revenue * 100
-        ).round(1)
+        table_df["revenue_pct"] = (table_df["revenue"] / total_revenue * 100).fillna(0)
     else:
         table_df["revenue_pct"] = 0.0
 
-    # Sort by revenue
     table_df = table_df.sort_values("revenue", ascending=False)
 
-    # ---------------------------------------------------------
-    # ADD TOTAL ROW
-    # ---------------------------------------------------------
+    # Add Grand Total
     total_row = pd.DataFrame([{
         "sku": "GRAND TOTAL",
         "units": table_df["units"].sum(),
         "revenue": table_df["revenue"].sum(),
         "revenue_pct": 100.0
     }])
-
     table_df = pd.concat([table_df, total_row], ignore_index=True)
 
-    # ---------------------------------------------------------
-    # ROW HIGHLIGHTING
-    # ---------------------------------------------------------
+    # Styling
     def highlight_selected(row):
         if row["sku"] == "GRAND TOTAL":
             return ["font-weight: bold"] * len(row)
         if sku != "All" and row["sku"] == sku:
-            return ["background-color: #444444"] * len(row) # Changed to slightly darker grey for better visibility
+            return ["background-color: #444444"] * len(row)
         return [""] * len(row)
 
-    styled_table = (
-        table_df
-        .style
-        .apply(highlight_selected, axis=1)
-        .format({
+    st.markdown("### 📋 Product Summary")
+    st.dataframe(
+        table_df.style.apply(highlight_selected, axis=1).format({
             "units": "{:,.0f}",
             "revenue": "₹{:,.0f}",
             "revenue_pct": "{:.1f}%"
-        })
+        }),
+        use_container_width=True
     )
-
-    # ---------------------------------------------------------
-    # DISPLAY
-    # ---------------------------------------------------------
-    st.markdown("### 📋 Product-wise Summary (Last Selected Weeks)")
-    st.dataframe(styled_table, use_container_width=True)

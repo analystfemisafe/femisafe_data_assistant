@@ -1,69 +1,95 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
+
+# ---------------------------------------------------------
+# 🚀 OPTIMIZED DATA LOADER
+# ---------------------------------------------------------
+@st.cache_data(ttl=900)
+def get_overall_sales_data():
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame()
+
+    try:
+        with engine.connect() as conn:
+            # ⚡ SQL OPTIMIZATION: Select only needed columns
+            # Note: We select specific columns to avoid 'SELECT *' overhead
+            query = text("SELECT revenue, sku_units, order_date, month FROM femisafe_sales")
+            df = pd.read_sql(query, conn)
+        
+        if df.empty: return df
+
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+
+        # 1. Standardize Column Names
+        df.columns = df.columns.str.strip().str.lower()
+        
+        # 2. Rename 'sku_units' to 'units' for consistency
+        if 'sku_units' in df.columns:
+            df.rename(columns={'sku_units': 'units'}, inplace=True)
+        elif 'units' not in df.columns:
+            df['units'] = 0
+
+        # 3. Fast Vectorized Cleaning (Revenue & Units)
+        # Regex removes ₹, commas, spaces instantly
+        if 'revenue' in df.columns:
+            df['revenue'] = pd.to_numeric(
+                df['revenue'].astype(str).str.replace(r'[₹,]', '', regex=True),
+                errors='coerce'
+            ).fillna(0)
+
+        if 'units' in df.columns:
+            df['units'] = pd.to_numeric(
+                df['units'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            ).fillna(0).astype('int32')
+
+        # 4. Fast Date Parsing (dayfirst=True fixes date flipping)
+        df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+        df.dropna(subset=['order_date'], inplace=True)
+
+        # 5. Optimize Text to Category
+        if 'month' in df.columns:
+            df['month'] = df['month'].astype(str).str.strip().astype('category')
+
+        return df
+
+    except Exception as e:
+        st.error(f"⚠️ Data Load Error: {e}")
+        return pd.DataFrame()
+
+# ===========================================================
+# PAGE
+# ===========================================================
 def page():
 
-    st.title("📊 Overall Sales Overview")
+    st.title("📊 Overall Sales Overview (Optimized)")
 
-    # ---------------------------------------------------------
-    # 1. UNIVERSAL DATA LOADER (Replaces local utils & psycopg2)
-    # ---------------------------------------------------------
-    @st.cache_data(ttl=600)
-    def load_data():
-        try:
-            # --- Universal Secret Loader ---
-            try:
-                # 1. Try Local Secrets (Laptop)
-                db_url = st.secrets["postgres"]["url"]
-            except (FileNotFoundError, KeyError):
-                # 2. Try Render Environment Variable (Cloud)
-                db_url = os.environ.get("DATABASE_URL")
-            
-            # Check if URL was found
-            if not db_url:
-                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-                return pd.DataFrame()
-
-            # Create Engine & Fetch Data
-            engine = create_engine(db_url)
-            with engine.connect() as conn:
-                query = text("SELECT * FROM femisafe_sales")
-                df = pd.read_sql(query, conn)
-            
-            # Standardize columns immediately
-            df.columns = df.columns.str.strip().str.lower()
-            return df
-            
-        except Exception as e:
-            st.error(f"⚠️ Database Connection Failed: {e}")
-            return pd.DataFrame()
-
-    # Load data once
-    df = load_data()
+    # Load Data (Instant if cached)
+    df = get_overall_sales_data()
 
     if df.empty:
-        st.warning("No data available.")
+        st.warning("No data available in 'femisafe_sales'.")
         return
 
     # ---------------------------------------------------------
     # 2. PREPROCESS DATA
     # ---------------------------------------------------------
-    # Ensure correct types
-    df['revenue'] = pd.to_numeric(df['revenue'], errors='coerce').fillna(0)
-    
-    # Handle 'units' vs 'sku_units' naming
-    if 'sku_units' in df.columns:
-        df['units'] = pd.to_numeric(df['sku_units'], errors='coerce').fillna(0)
-    elif 'units' in df.columns:
-        df['units'] = pd.to_numeric(df['units'], errors='coerce').fillna(0)
-    else:
-        df['units'] = 0
-
-    df['order_date'] = pd.to_datetime(df['order_date'], errors='coerce')
-
     # Total Metrics
     total_revenue = df['revenue'].sum()
     total_units = df['units'].sum()
@@ -71,12 +97,13 @@ def page():
     # Latest Month Metrics
     latest_date = df['order_date'].max()
     latest_year = latest_date.year
-    latest_month = latest_date.month
+    latest_month_num = latest_date.month
     month_name = latest_date.strftime("%B")
 
+    # Fast filtering for latest month
     latest_month_df = df[
         (df['order_date'].dt.year == latest_year) &
-        (df['order_date'].dt.month == latest_month)
+        (df['order_date'].dt.month == latest_month_num)
     ]
 
     latest_month_revenue = latest_month_df['revenue'].sum()
@@ -125,17 +152,19 @@ def page():
     # -----------------------------------------
     
     # Filter Logic (April to Latest)
-    if latest_month >= 4:
-        df_chart = df[df['order_date'].dt.month.between(4, latest_month)]
+    # Using .dt accessors is fast enough here
+    if latest_month_num >= 4:
+        df_chart = df[df['order_date'].dt.month.between(4, latest_month_num)]
     else:
         # If current month is Jan/Feb/Mar, show April-Dec of prev year + Jan-Current of this year
-        # (Simplified based on your logic: just show specific months)
+        # Logic: Month is >= 4 OR Month is <= current month
         df_chart = df[
             (df['order_date'].dt.month >= 4) | 
-            (df['order_date'].dt.month <= latest_month)
+            (df['order_date'].dt.month <= latest_month_num)
         ]
 
-    df_monthly = df_chart.groupby('month', as_index=False).agg({
+    # observed=True speeds up grouping on 'month' category
+    df_monthly = df_chart.groupby('month', observed=False, as_index=False).agg({
         'revenue': 'sum',
         'units': 'sum'
     })
@@ -146,12 +175,15 @@ def page():
         9:'September',10:'October',11:'November',12:'December'
     }
 
-    month_order = (
-        [month_map[m] for m in range(4, latest_month + 1)]
-        if latest_month >= 4
-        else [month_map[m] for m in range(4, 13)] +
-             [month_map[m] for m in range(1, latest_month + 1)]
-    )
+    # Define custom sort order for months
+    if latest_month_num >= 4:
+        month_order = [month_map[m] for m in range(4, latest_month_num + 1)]
+    else:
+        month_order = [month_map[m] for m in range(4, 13)] + [month_map[m] for m in range(1, latest_month_num + 1)]
+
+    # Filter out months that might not exist in data yet to prevent empty categories
+    existing_months = set(df_monthly['month'].unique())
+    month_order = [m for m in month_order if m in existing_months]
 
     df_monthly['month'] = pd.Categorical(
         df_monthly['month'],
@@ -185,7 +217,7 @@ def page():
     ))
 
     fig.update_layout(
-        title=f"📈 Month-wise Sales Overview (Apr–{month_map[latest_month]})",
+        title=f"📈 Month-wise Sales Overview (Apr–{month_map[latest_month_num]})",
         xaxis_title="Date",
         yaxis_title="Revenue (₹)",
         yaxis2=dict(

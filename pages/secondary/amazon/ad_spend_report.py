@@ -1,59 +1,82 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import timedelta
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
 
 # ---------------------------------------------------------
-# DB FETCH (Universal Connection)
+# 🚀 OPTIMIZED DATA LOADER
 # ---------------------------------------------------------
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=900)
 def get_amazon_data():
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame(), pd.DataFrame()
+
     try:
-        # --- Universal Secret Loader ---
-        try:
-            # 1. Try Local Secrets (Laptop)
-            db_url = st.secrets["postgres"]["url"]
-        except (FileNotFoundError, KeyError):
-            # 2. Try Render Environment Variable (Cloud)
-            db_url = os.environ.get("DATABASE_URL")
-        
-        # Check if URL was found
-        if not db_url:
-            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-            return pd.DataFrame(), pd.DataFrame()
-
-        # Define Queries
-        sales_q = """
-            SELECT
-                date,
-                product,
-                net_revenue,
-                units_sold
-            FROM femisafe_amazon_salesdata
-        """
-
-        ads_q = """
-            SELECT
-                date,
-                product,
-                spend_inr
-            FROM femisafe_amazon_addata
-        """
-
-        # Create Engine & Fetch Data
-        engine = create_engine(db_url)
         with engine.connect() as conn:
-            sales = pd.read_sql(text(sales_q), conn)
-            ads = pd.read_sql(text(ads_q), conn)
+            # ⚡ SQL OPTIMIZATION: Select only needed columns
+            sales_q = text("""
+                SELECT date, product, net_revenue, units_sold 
+                FROM femisafe_amazon_salesdata
+            """)
+            ads_q = text("""
+                SELECT date, product, spend_inr 
+                FROM femisafe_amazon_addata
+            """)
 
-        # Process Dates
+            sales = pd.read_sql(sales_q, conn)
+            ads = pd.read_sql(ads_q, conn)
+
+        # =========================================================
+        # ⚡ FAST CLEANING & OPTIMIZATION
+        # =========================================================
+
+        # --- Process Sales Data ---
         if not sales.empty:
-            sales["date"] = pd.to_datetime(sales["date"])
-        
+            # 1. Vectorized Number Cleaning
+            sales['net_revenue'] = pd.to_numeric(
+                sales['net_revenue'].astype(str).str.replace(r'[₹,]', '', regex=True), 
+                errors='coerce'
+            ).fillna(0)
+            
+            sales['units_sold'] = pd.to_numeric(
+                sales['units_sold'].astype(str).str.replace(',', ''), 
+                errors='coerce'
+            ).fillna(0).astype('int32')
+
+            # 2. Fast Date Parsing
+            sales['date'] = pd.to_datetime(sales['date'], dayfirst=True, errors='coerce')
+            sales.dropna(subset=['date'], inplace=True)
+
+            # 3. Optimize Text to Category
+            sales['product'] = sales['product'].fillna("Unknown").astype(str).str.strip().astype('category')
+
+        # --- Process Ads Data ---
         if not ads.empty:
-            ads["date"] = pd.to_datetime(ads["date"])
+            # 1. Vectorized Number Cleaning
+            ads['spend_inr'] = pd.to_numeric(
+                ads['spend_inr'].astype(str).str.replace(r'[₹,]', '', regex=True), 
+                errors='coerce'
+            ).fillna(0)
+
+            # 2. Fast Date Parsing
+            ads['date'] = pd.to_datetime(ads['date'], dayfirst=True, errors='coerce')
+            ads.dropna(subset=['date'], inplace=True)
+
+            # 3. Optimize Text to Category
+            ads['product'] = ads['product'].fillna("Unknown").astype(str).str.strip().astype('category')
 
         return sales, ads
 
@@ -67,16 +90,17 @@ def get_amazon_data():
 # ---------------------------------------------------------
 def page():
 
-    st.markdown("### 📊 Amazon Day-wise Sales vs Ads")
+    st.markdown("### 📊 Amazon Day-wise Sales vs Ads (Optimized)")
 
+    # Load Data (Instant if cached)
     sales, ads = get_amazon_data()
 
-    if sales.empty or ads.empty:
+    if sales.empty and ads.empty:
         st.warning("No data available for Sales or Ads.")
         return
 
     # ---------------------------------------------------------
-    # DATE RANGE FILTER (needed before product list)
+    # DATE RANGE FILTER
     # ---------------------------------------------------------
     col1, col2 = st.columns(2)
 
@@ -87,14 +111,11 @@ def page():
         )
 
     days_map = {
-        "Last 7 Days": 7,
-        "Last 14 Days": 14,
-        "Last 30 Days": 30,
-        "Last 60 Days": 60,
-        "Last 90 Days": 90
+        "Last 7 Days": 7, "Last 14 Days": 14, "Last 30 Days": 30,
+        "Last 60 Days": 60, "Last 90 Days": 90
     }
 
-    # Ensure we have valid dates to calculate range
+    # Calculate Dates
     max_sales_date = sales["date"].max() if not sales.empty else pd.Timestamp.now()
     max_ads_date = ads["date"].max() if not ads.empty else pd.Timestamp.now()
     
@@ -102,70 +123,72 @@ def page():
     start_date = end_date - timedelta(days=days_map[range_label])
 
     # ---------------------------------------------------------
-    # FILTER ADS FIRST → PRODUCTS WITH DAILY SPEND ≥ 50
+    # FILTER ADS & IDENTIFY VALID PRODUCTS
     # ---------------------------------------------------------
-    ads_range = ads[
-        (ads["date"] >= start_date) &
-        (ads["date"] <= end_date)
-    ]
-
-    # Handle case where ads_range might be empty
-    if not ads_range.empty:
-        ads_daily = (
-            ads_range
-            .groupby(["date", "product"], as_index=False)
-            .agg(daily_spend=("spend_inr", "sum"))
-        )
-
-        valid_products = (
-            ads_daily[ads_daily["daily_spend"] >= 50]
-            ["product"]
-            .dropna()
-            .unique()
-            .tolist()
-        )
+    if not ads.empty:
+        # Filter by date first (Fast)
+        ads_range = ads[
+            (ads["date"] >= start_date) &
+            (ads["date"] <= end_date)
+        ]
+        
+        if not ads_range.empty:
+            # groupby on 'category' dtype is very fast
+            ads_daily = (
+                ads_range
+                .groupby(["date", "product"], observed=True, as_index=False)
+                .agg(daily_spend=("spend_inr", "sum"))
+            )
+            
+            valid_products = (
+                ads_daily[ads_daily["daily_spend"] >= 50]
+                ["product"]
+                .unique()
+                .tolist()
+            )
+        else:
+            valid_products = []
+            ads_range = pd.DataFrame() # Empty structure
     else:
         valid_products = []
+        ads_range = pd.DataFrame()
 
     # ---------------------------------------------------------
-    # PRODUCT FILTER (only valid products)
+    # PRODUCT FILTER
     # ---------------------------------------------------------
     with col1:
+        # Sort the product list
         product = st.selectbox(
             "Select Product",
-            ["All"] + sorted(valid_products)
+            ["All"] + sorted(list(valid_products))
         )
 
     # ---------------------------------------------------------
-    # APPLY FILTERS
+    # APPLY FINAL FILTERS
     # ---------------------------------------------------------
-    sales_f = sales[
-        (sales["date"] >= start_date) &
-        (sales["date"] <= end_date)
-    ]
+    # Sales Filter
+    sales_f = pd.DataFrame()
+    if not sales.empty:
+        sales_f = sales[
+            (sales["date"] >= start_date) & 
+            (sales["date"] <= end_date)
+        ]
+        if product != "All":
+            sales_f = sales_f[sales_f["product"] == product]
 
+    # Ads Filter (ads_range is already date-filtered)
     ads_f = ads_range.copy()
-
-    if product != "All":
-        sales_f = sales_f[sales_f["product"] == product]
+    if not ads_f.empty and product != "All":
         ads_f = ads_f[ads_f["product"] == product]
 
-
     # ---------------------------------------------------------
-    # DAY FIELDS
+    # AGGREGATION
     # ---------------------------------------------------------
-    for df in [sales_f, ads_f]:
-        if not df.empty:
-            df["day_name"] = df["date"].dt.day_name()
-            df["day_num"] = (df["date"].dt.weekday + 1) % 7
-
-    # ---------------------------------------------------------
-    # AGGREGATION (DATEWISE)
-    # ---------------------------------------------------------
+    # Sales Aggregation
     if not sales_f.empty:
         sales_agg = (
             sales_f
-            .groupby("date")
+            .groupby("date", observed=True)
             .agg(
                 sales_revenue=("net_revenue", "sum"),
                 units=("units_sold", "sum")
@@ -175,10 +198,11 @@ def page():
     else:
         sales_agg = pd.DataFrame(columns=["date", "sales_revenue", "units"])
 
+    # Ads Aggregation
     if not ads_f.empty:
         ads_agg = (
             ads_f
-            .groupby("date")
+            .groupby("date", observed=True)
             .agg(
                 ad_spend=("spend_inr", "sum")
             )
@@ -187,10 +211,11 @@ def page():
     else:
         ads_agg = pd.DataFrame(columns=["date", "ad_spend"])
 
+    # Merge
     merged = sales_agg.merge(
         ads_agg,
         on="date",
-        how="left"
+        how="outer"  # Changed to outer to show spend even if 0 sales
     ).fillna(0)
 
     if merged.empty:
@@ -200,11 +225,11 @@ def page():
     merged = merged.sort_values("date")
 
     # ---------------------------------------------------------
-    # RESHAPE FOR CLUSTERED BAR
+    # CHART PREP
     # ---------------------------------------------------------
     chart_df = pd.melt(
         merged,
-        id_vars=["date", "units"],
+        id_vars=["date"],
         value_vars=["sales_revenue", "ad_spend"],
         var_name="metric",
         value_name="value"
@@ -216,7 +241,7 @@ def page():
     })
 
     # ---------------------------------------------------------
-    # CHART
+    # PLOTLY CHART
     # ---------------------------------------------------------
     fig = px.bar(
         chart_df,
@@ -224,31 +249,21 @@ def page():
         y="value",
         color="metric",
         barmode="group",
-        text=chart_df.apply(
-            lambda x: f'₹{x["value"]:,.0f}',
-            axis=1
-        ),
-        category_orders={
-        "metric": ["Ads", "Sales"] 
-        },
-        labels={
-            "date": "Date",
-            "value": "Amount (₹)",
-            "metric": ""
-        }
+        text=chart_df.apply(lambda x: f'₹{x["value"]:,.0f}', axis=1),
+        category_orders={"metric": ["Ads", "Sales"]},
+        labels={"date": "Date", "value": "Amount (₹)", "metric": ""},
+        color_discrete_map={"Sales": "#2ca02c", "Ads": "#d62728"} # Green for Sales, Red for Ads
     )
 
-    fig.update_traces(
-        textposition="outside",
-        cliponaxis=False
-    )
+    fig.update_traces(textposition="outside", cliponaxis=False)
 
     fig.update_layout(
         height=520,
         bargap=0.25,
         legend_title="",
         yaxis_tickformat=",.0f",
-        xaxis_tickformat="%b %d"   # Dec 01, Dec 02 style
+        xaxis_tickformat="%b %d",
+        title=f"Sales vs Ad Spend ({product})"
     )
 
     st.plotly_chart(fig, use_container_width=True)

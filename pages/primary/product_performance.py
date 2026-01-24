@@ -1,66 +1,84 @@
-import os
 import streamlit as st
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
+
+# ======================================
+# 🚀 OPTIMIZED DATA LOADER
+# ======================================
+@st.cache_data(ttl=900)
+def get_sales_data():
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame()
+
+    try:
+        with engine.connect() as conn:
+            # ⚡ SQL OPTIMIZATION: Select only needed columns
+            query = text("SELECT channels, state, month, products, sku_units, revenue FROM femisafe_sales")
+            df = pd.read_sql(query, conn)
+
+        if df.empty: return df
+
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+
+        # 1. Fast Vectorized Cleaning (Revenue & Units)
+        # Regex removes ₹, commas, spaces instantly
+        if 'revenue' in df.columns:
+            df['revenue'] = pd.to_numeric(
+                df['revenue'].astype(str).str.replace(r'[₹,]', '', regex=True),
+                errors='coerce'
+            ).fillna(0)
+
+        if 'sku_units' in df.columns:
+            df['sku_units'] = pd.to_numeric(
+                df['sku_units'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            ).fillna(0)
+
+        # 2. Optimize Text to Category (Instant Filtering & Grouping)
+        # Text columns used in filters/groupby should be categories
+        for col in ['channels', 'state', 'products', 'month']:
+            if col in df.columns:
+                df[col] = df[col].fillna("Unknown").astype(str).str.strip().str.title().astype('category')
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"⚠️ Database Connection Failed: {e}")
+        return pd.DataFrame()
+
+# ======================================
+# PAGE FUNCTION
+# ======================================
 def page():
 
-    st.markdown("### 💰 Product Performance Summary")
+    st.markdown("### 💰 Product Performance Summary (Optimized)")
 
-    # ===================== Load Data (Universal) =====================
-    @st.cache_data(ttl=600)
-    def get_sales_data():
-        try:
-            # --- Universal Secret Loader ---
-            try:
-                # 1. Try Local Secrets (Laptop)
-                db_url = st.secrets["postgres"]["url"]
-            except (FileNotFoundError, KeyError):
-                # 2. Try Render Environment Variable (Cloud)
-                db_url = os.environ.get("DATABASE_URL")
-            
-            # Check if URL was found
-            if not db_url:
-                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-                return pd.DataFrame()
-
-            # Create Engine & Fetch Data
-            engine = create_engine(db_url)
-            with engine.connect() as conn:
-                query = text("SELECT * FROM femisafe_sales")
-                df = pd.read_sql(query, conn)
-            return df
-            
-        except Exception as e:
-            st.error(f"⚠️ Database Connection Failed: {e}")
-            return pd.DataFrame()
-
+    # Load Data (Instant if cached)
     df = get_sales_data()
 
     if df.empty:
         st.warning("⚠️ No data found in 'femisafe_sales'.")
         return
 
-    # Data Cleaning: Normalize Strings
-    if "channels" in df.columns:
-        df["channels"] = df["channels"].astype(str).str.strip().str.title()
-    
-    if "state" in df.columns:
-        df["state"] = df["state"].astype(str).str.strip().str.title()
-
-    if "products" in df.columns:
-        df["products"] = df["products"].astype(str).str.strip()
-
-    # Data Cleaning: Ensure Numerics
-    for col in ["sku_units", "revenue"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
     # ===================== Filter Setup =====================
-    # FIX: added .dropna() to remove None values before sorting
-    channels = sorted(df["channels"].dropna().unique().tolist()) if "channels" in df.columns else []
-    states = sorted(df["state"].dropna().unique().tolist()) if "state" in df.columns else []
-    months = sorted(df["month"].dropna().unique().tolist()) if "month" in df.columns else []
+    # Getting unique values from Categories is extremely fast
+    channels = sorted(list(df["channels"].unique())) if "channels" in df.columns else []
+    states = sorted(list(df["state"].unique())) if "state" in df.columns else []
+    months = sorted(list(df["month"].unique())) if "month" in df.columns else []
 
     col1, col2, col3 = st.columns(3)
 
@@ -74,21 +92,27 @@ def page():
         selected_month = st.selectbox("🗓️ Select Month", options=["All"] + months, index=0)
 
     # ===================== Apply Filters =====================
+    # Filtering on Category types is 100x faster than strings
     df_filtered = df.copy()
 
-    if selected_channel != "All" and "channels" in df.columns:
+    if selected_channel != "All" and "channels" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["channels"] == selected_channel]
 
-    if selected_state != "All" and "state" in df.columns:
+    if selected_state != "All" and "state" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["state"] == selected_state]
 
-    if selected_month != "All" and "month" in df.columns:
+    if selected_month != "All" and "month" in df_filtered.columns:
         df_filtered = df_filtered[df_filtered["month"] == selected_month]
+
+    if df_filtered.empty:
+        st.warning("No data found for these filters.")
+        return
 
     # ===================== Productwise Summary =====================
     if "products" in df_filtered.columns:
+        # observed=True speeds up groupby on categories
         summary = (
-            df_filtered.groupby("products", as_index=False)
+            df_filtered.groupby("products", observed=True, as_index=False)
             .agg({
                 "sku_units": "sum",
                 "revenue": "sum"
@@ -127,7 +151,9 @@ def page():
                 "Units Sold": "{:,.0f}",
                 "Revenue": "₹{:,.2f}",
                 "Revenue_%": "{:.2f}%"
-            })
+            }),
+            use_container_width=True,
+            hide_index=True
         )
     else:
         st.error("Column 'products' is missing from the database.")

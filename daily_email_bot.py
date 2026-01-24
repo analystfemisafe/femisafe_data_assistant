@@ -22,10 +22,20 @@ def get_data():
     try:
         engine = create_engine(DB_URL)
         with engine.connect() as conn:
-            # Fetch Shopify
-            df_s = pd.read_sql(text("SELECT * FROM femisafe_shopify_salesdata"), conn)
-            # Fetch Amazon
-            df_a = pd.read_sql(text("SELECT * FROM femisafe_amazon_salesdata"), conn)
+            # Optimize: Select only required columns and alias them for consistency.
+            # This is faster and more robust than fetching all columns with SELECT *.
+            # NOTE: Column names with spaces/mixed-case must be double-quoted.
+            shopify_query = text("""
+                SELECT "total sales" AS total_sales, "quantity ordered" AS quantity_ordered
+                FROM femisafe_shopify_salesdata
+            """)
+            amazon_query = text("""
+                SELECT "ordered product sales" AS ordered_product_sales, "units ordered" AS units_ordered
+                FROM femisafe_amazon_salesdata
+            """)
+            # The column names in the dataframe will now be 'total_sales', 'quantity_ordered', etc.
+            df_s = pd.read_sql(shopify_query, conn)
+            df_a = pd.read_sql(amazon_query, conn)
         return df_s, df_a
     except Exception as e:
         print(f"❌ Database Error: {e}")
@@ -41,15 +51,13 @@ if df_shopify.empty or df_amazon.empty:
     print("⚠️ Data missing. Aborting email.")
     exit()
 
-# Clean Shopify
-df_shopify.columns = df_shopify.columns.str.lower().str.replace(' ', '_')
-shop_rev = df_shopify['total_sales'].sum() if 'total_sales' in df_shopify.columns else 0
-shop_units = df_shopify['quantity_ordered'].sum() if 'quantity_ordered' in df_shopify.columns else 0
-
-# Clean Amazon
-df_amazon.columns = df_amazon.columns.str.lower().str.replace(' ', '_')
-amz_rev = df_amazon['ordered_product_sales'].sum() if 'ordered_product_sales' in df_amazon.columns else 0
-amz_units = df_amazon['units_ordered'].sum() if 'units_ordered' in df_amazon.columns else 0
+# Calculations
+# The column names are now clean because of the SQL aliases.
+# Add pd.to_numeric to handle any non-numeric data gracefully.
+shop_rev = pd.to_numeric(df_shopify['total_sales'], errors='coerce').fillna(0).sum()
+shop_units = pd.to_numeric(df_shopify['quantity_ordered'], errors='coerce').fillna(0).sum()
+amz_rev = pd.to_numeric(df_amazon['ordered_product_sales'], errors='coerce').fillna(0).sum()
+amz_units = pd.to_numeric(df_amazon['units_ordered'], errors='coerce').fillna(0).sum()
 
 total_rev = shop_rev + amz_rev
 

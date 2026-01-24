@@ -1,38 +1,32 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import timedelta
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine(): return create_engine(os.environ.get("DATABASE_URL"))
 
 # ---------------------------------------------------------
-# Database Helper (Universal)
+# 🚀 OPTIMIZED DATA LOADER
 # ---------------------------------------------------------
-def get_db_engine():
-    try:
-        # 1. Try Local Secrets (Laptop)
-        db_url = st.secrets["postgres"]["url"]
-    except (FileNotFoundError, KeyError):
-        # 2. Try Render Environment Variable (Cloud)
-        db_url = os.environ.get("DATABASE_URL")
-    
-    if not db_url:
-        st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-        return None
-
-    return create_engine(db_url)
-
-# ---------------------------------------------------------
-# Fetch Blinkit Data
-# ---------------------------------------------------------
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=900)  # Cache for 15 minutes
 def get_blinkit_data():
     engine = get_db_engine()
-    if not engine:
-        return pd.DataFrame()
+    if not engine: return pd.DataFrame()
 
     try:
         with engine.connect() as conn:
+            # ⚡ SQL OPTIMIZATION: 
+            # 1. Select ONLY needed columns
+            # 2. Filter 'Cancelled' here to reduce download size
             query = text("""
                 SELECT 
                     order_date,
@@ -42,12 +36,36 @@ def get_blinkit_data():
                     net_revenue,
                     quantity
                 FROM femisafe_blinkit_salesdata
+                WHERE order_status NOT IN ('Cancelled', 'Returned')
             """)
             df = pd.read_sql(query, conn)
         
-        # Process dates
-        df["order_date"] = pd.to_datetime(df["order_date"], errors="coerce")
+        if df.empty: return df
+        
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+        
+        # 1. Fast Vectorized Cleaning
+        for col in ['net_revenue', 'quantity']:
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.replace(r'[₹,]', '', regex=True), 
+                errors='coerce'
+            ).fillna(0)
+
+        # 2. Downcast numeric types
+        df['quantity'] = df['quantity'].astype('int32')
+
+        # 3. Use Categories for Text (Instant filtering)
+        df['feeder_wh'] = df['feeder_wh'].fillna("Unknown").astype(str).str.title().astype('category')
+        df['product'] = df['product'].astype('category')
+        df['sku'] = df['sku'].astype('category')
+        
+        # 4. Fast Date Parsing
+        df["order_date"] = pd.to_datetime(df["order_date"], dayfirst=True, errors="coerce")
+        df.dropna(subset=['order_date'], inplace=True)
         df["date"] = df["order_date"].dt.date
+        
         return df
 
     except Exception as e:
@@ -60,17 +78,15 @@ def get_blinkit_data():
 
 def page():
 
-    st.markdown("### 🏙️ City-wise Sales Report (Last 7 Days Comparison)")
+    st.markdown("### 🏙️ City-wise Sales Report (Optimized)")
 
     # ===================== Get Blinkit Data =====================
+    # Load Data (Instant if cached)
     df = get_blinkit_data()
 
     if df.empty:
         st.warning("No data available.")
         return
-
-    df['order_date'] = pd.to_datetime(df['order_date'])
-    df['date'] = df['order_date'].dt.date
 
     # Get latest, D-1, and D-7
     latest_date = df['date'].max()
@@ -79,13 +95,14 @@ def page():
 
     # Filter only relevant dates
     df_filtered = df[df['date'].isin([d7_date, d1_date, latest_date])]
-
+    
     if df_filtered.empty:
-        st.warning("No data found for the comparison dates.")
+        st.warning(f"No data found for {latest_date}, {d1_date}, or {d7_date}.")
         return
 
     # Aggregate
-    grouped = df_filtered.groupby(['feeder_wh', 'sku', 'date']).agg({
+    # observed=True speeds up grouping on Categories
+    grouped = df_filtered.groupby(['feeder_wh', 'sku', 'date'], observed=True).agg({
         'net_revenue': 'sum',
         'quantity': 'sum'
     }).reset_index()
@@ -104,29 +121,30 @@ def page():
         for i, j in pivot.columns
     ]
 
-    # Reorder columns (Check if columns exist first to prevent errors)
-    expected_cols = [
-        'feeder_wh', 'sku',
-        f'quantity_{d7_date.strftime("%b%d")}', f'net_revenue_{d7_date.strftime("%b%d")}',
-        f'quantity_{d1_date.strftime("%b%d")}', f'net_revenue_{d1_date.strftime("%b%d")}',
-        f'quantity_{latest_date.strftime("%b%d")}', f'net_revenue_{latest_date.strftime("%b%d")}'
-    ]
+    # Reorder columns (Check dynamically if columns exist)
+    cols_to_keep = ['feeder_wh', 'sku']
+    date_suffixes = [d7_date, d1_date, latest_date]
     
-    # Filter out any missing columns (e.g. if one date has no sales)
-    available_cols = [col for col in expected_cols if col in pivot.columns]
-    pivot = pivot[available_cols]
+    for d in date_suffixes:
+        q_col = f'quantity_{d.strftime("%b%d")}'
+        r_col = f'net_revenue_{d.strftime("%b%d")}'
+        if q_col in pivot.columns: cols_to_keep.append(q_col)
+        if r_col in pivot.columns: cols_to_keep.append(r_col)
+            
+    pivot = pivot[cols_to_keep]
 
-    # Delta columns (Ensure columns exist before calculating)
+    # Delta columns (Safely)
     q_latest = f'quantity_{latest_date.strftime("%b%d")}'
     q_d7 = f'quantity_{d7_date.strftime("%b%d")}'
     r_latest = f'net_revenue_{latest_date.strftime("%b%d")}'
     r_d7 = f'net_revenue_{d7_date.strftime("%b%d")}'
 
+    # Fast Vectorized Deltas
     if q_latest in pivot.columns and q_d7 in pivot.columns:
         pivot['Units Delta'] = pivot[q_latest] - pivot[q_d7]
     else:
         pivot['Units Delta'] = 0
-
+        
     if r_latest in pivot.columns and r_d7 in pivot.columns:
         pivot['Revenue Delta'] = pivot[r_latest] - pivot[r_d7]
     else:
@@ -134,22 +152,24 @@ def page():
 
     # ================== Subtotals Per Feeder ==================
     subtotal_rows = []
-    for feeder, group in pivot.groupby('feeder_wh', group_keys=False):
-
-        group = group.copy()  # IMPORTANT FIX
-
-        # Create subtotal dictionary dynamically based on available columns
-        subtotal_data = {
+    
+    # Iterate through each warehouse group
+    # Using observed=True is faster
+    for feeder, group in pivot.groupby('feeder_wh', observed=True):
+        group = group.copy()
+        
+        # Build subtotal dictionary
+        subtotal_dict = {
             'feeder_wh': [feeder],
             'sku': [f"{feeder} Total"]
         }
         
-        # Sum only the quantity/revenue columns that exist
-        for col in available_cols:
-            if "quantity" in col or "net_revenue" in col:
-                subtotal_data[col] = [group[col].sum()]
-
-        subtotal = pd.DataFrame(subtotal_data)
+        # Sum numeric columns
+        for col in cols_to_keep:
+            if col not in ['feeder_wh', 'sku']:
+                subtotal_dict[col] = [group[col].sum()]
+                
+        subtotal = pd.DataFrame(subtotal_dict)
 
         # Recalculate Deltas for Subtotal
         if q_latest in subtotal.columns and q_d7 in subtotal.columns:
@@ -159,15 +179,13 @@ def page():
 
         if r_latest in subtotal.columns and r_d7 in subtotal.columns:
             subtotal['Revenue Delta'] = subtotal[r_latest] - subtotal[r_d7]
-        else:
-            subtotal['Revenue Delta'] = 0
-
-        # Calculate Growth %
-        if r_latest in subtotal.columns and r_d7 in subtotal.columns:
+            
+            # Growth %
             prev = subtotal[r_d7].iloc[0]
             curr = subtotal[r_latest].iloc[0]
             subtotal['Growth %'] = 0 if prev == 0 else round(((curr - prev) / prev) * 100, 2)
         else:
+            subtotal['Revenue Delta'] = 0
             subtotal['Growth %'] = 0
 
         group['Growth %'] = ""
@@ -175,7 +193,7 @@ def page():
 
     final_df = pd.concat(subtotal_rows, ignore_index=True)
 
-    # Convert quantities to int (safely)
+    # Convert quantities to int safely
     for col in final_df.columns:
         if "quantity" in col:
             final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0).astype(int)
@@ -187,31 +205,31 @@ def page():
         latest_date.strftime("%b%d"): latest_date.strftime("%B %d"),
     }
 
-    # Dynamic multi-index based on available columns
-    new_columns = []
+    # Construct MultiIndex
+    new_cols = []
     for col in final_df.columns:
         if col == 'feeder_wh':
-            new_columns.append(('Feeder WH', ''))
+            new_cols.append(('Feeder WH', ''))
         elif col == 'sku':
-            new_columns.append(('SKU', ''))
+            new_cols.append(('SKU', ''))
         elif 'quantity_' in col:
-            date_part = col.replace('quantity_', '')
-            new_columns.append((date_labels.get(date_part, date_part), 'Units'))
+            d_part = col.replace('quantity_', '')
+            new_cols.append((date_labels.get(d_part, d_part), 'Units'))
         elif 'net_revenue_' in col:
-            date_part = col.replace('net_revenue_', '')
-            new_columns.append((date_labels.get(date_part, date_part), 'Net Rev'))
+            d_part = col.replace('net_revenue_', '')
+            new_cols.append((date_labels.get(d_part, d_part), 'Net Rev'))
         elif col == 'Units Delta':
-            new_columns.append(('Delta', 'Units Delta'))
+            new_cols.append(('Delta', 'Units Delta'))
         elif col == 'Revenue Delta':
-            new_columns.append(('Delta', 'Revenue Delta'))
+            new_cols.append(('Delta', 'Revenue Delta'))
         elif col == 'Growth %':
-            new_columns.append(('Delta', 'Growth %'))
+            new_cols.append(('Delta', 'Growth %'))
         else:
-            new_columns.append(('Other', col))
+            new_cols.append(('Other', col))
 
-    final_df.columns = pd.MultiIndex.from_tuples(new_columns)
+    final_df.columns = pd.MultiIndex.from_tuples(new_cols)
 
-    st.dataframe(final_df, use_container_width=True)
+    st.dataframe(final_df, use_container_width=True, height=600)
 
     # ---------------------------------------------------------
     # FILTERS (Side-by-side — Product + Warehouse)
@@ -221,16 +239,17 @@ def page():
 
     col1, col2 = st.columns(2)
 
-    all_products = sorted(df['product'].dropna().unique())
-    all_warehouses = sorted(df['feeder_wh'].dropna().unique())
+    # Fast unique values from Categories
+    all_products = sorted(list(df['product'].unique()))
+    all_warehouses = sorted(list(df['feeder_wh'].unique()))
 
     with col1:
-        selected_product = st.selectbox("Select Product", ["All"] + list(all_products))
+        selected_product = st.selectbox("Select Product", ["All"] + all_products)
 
     with col2:
-        selected_warehouse = st.selectbox("Select Warehouse", ["All"] + list(all_warehouses))
+        selected_warehouse = st.selectbox("Select Warehouse", ["All"] + all_warehouses)
 
-    # Apply filters
+    # Apply filters (Fast Category Filtering)
     filtered = df.copy()
 
     if selected_product != "All":
@@ -245,20 +264,20 @@ def page():
     # ---------------------------------------------------------
 
     filtered['date'] = filtered['order_date'].dt.date
-
     start_date = latest_date - timedelta(days=30)
-
     last_30 = filtered[filtered['date'] >= start_date]
+    
+    if last_30.empty:
+        st.info("No data available for chart.")
+        return
 
     daily_summary = last_30.groupby('date').agg({
         'quantity': 'sum',
         'net_revenue': 'sum'
-    }).reset_index()
-
-    daily_summary = daily_summary.sort_values('date')
+    }).reset_index().sort_values('date')
 
     # ---------------------------------------------------------
-    # BAR CHART (Units labels + revenue on hover)
+    # BAR CHART
     # ---------------------------------------------------------
 
     fig = px.bar(
@@ -267,6 +286,7 @@ def page():
         y='quantity',
         hover_data={'net_revenue': True, 'quantity': True},
         labels={'quantity': 'Units Sold', 'date': 'Date'},
+        title=f"Sales Trend: {selected_product if selected_product != 'All' else 'All Products'}"
     )
 
     fig.update_traces(text=daily_summary['quantity'], textposition='outside')

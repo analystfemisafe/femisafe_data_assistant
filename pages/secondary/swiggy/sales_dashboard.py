@@ -1,78 +1,100 @@
-import os
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
+
+# ---------------------------------------------------------
+# 🚀 OPTIMIZED DATA LOADER
+# ---------------------------------------------------------
+@st.cache_data(ttl=900)
+def get_swiggy_data():
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame()
+
+    try:
+        with engine.connect() as conn:
+            # ⚡ SQL OPTIMIZATION: Fetch only columns used in KPIs and Charts
+            query = text("""
+                SELECT 
+                    ordered_date,
+                    units_sold,
+                    month
+                FROM femisafe_swiggy_salesdata
+            """)
+            df = pd.read_sql(query, conn)
+        
+        if df.empty: return df
+
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+
+        # 1. Fast Vectorized Cleaning
+        if 'units_sold' in df.columns:
+            df['units_sold'] = pd.to_numeric(
+                df['units_sold'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            ).fillna(0).astype('int32')
+
+        # 2. Fast Date Parsing (dayfirst=True fixes date flipping)
+        df['ordered_date'] = pd.to_datetime(df['ordered_date'], dayfirst=True, errors='coerce')
+        df.dropna(subset=['ordered_date'], inplace=True)
+
+        # 3. Optimize Text to Category
+        if 'month' in df.columns:
+            df['month'] = df['month'].astype(str).str.strip().astype('category')
+
+        return df
+
+    except Exception as e:
+        st.error(f"⚠️ Data Load Error: {e}")
+        return pd.DataFrame()
 
 # ===========================================================
-# PAGE: SWIGGY → SALES DASHBOARD
+# PAGE
 # ===========================================================
-
 def page():
 
-    st.title("🛵 Swiggy Sales Dashboard")
+    st.title("🛵 Swiggy Sales Dashboard (Optimized)")
 
-    # ===================== Fetch Swiggy Data (Universal) =====================
-    @st.cache_data(ttl=600)
-    def get_swiggy_data():
-        try:
-            # --- Universal Secret Loader ---
-            try:
-                # 1. Try Local Secrets (Laptop)
-                db_url = st.secrets["postgres"]["url"]
-            except (FileNotFoundError, KeyError):
-                # 2. Try Render Environment Variable (Cloud)
-                db_url = os.environ.get("DATABASE_URL")
-            
-            # Check if URL was found
-            if not db_url:
-                st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-                return pd.DataFrame()
-
-            # Create Engine & Fetch Data
-            engine = create_engine(db_url)
-            with engine.connect() as conn:
-                query = text("""
-                    SELECT 
-                        ordered_date,
-                        sku,
-                        product,
-                        units_sold,
-                        city,
-                        area_name,
-                        l1_category,
-                        l2_category,
-                        l3_category,
-                        month
-                    FROM femisafe_swiggy_salesdata
-                """)
-                df = pd.read_sql(query, conn)
-            return df
-            
-        except Exception as e:
-            st.error(f"⚠️ Database Connection Failed: {e}")
-            return pd.DataFrame()
-
-    # Load data
+    # Load Data (Instant if cached)
     df = get_swiggy_data()
 
     if df.empty:
         st.warning("No Swiggy data available.")
         return
 
-    # Process Dates
-    df['ordered_date'] = pd.to_datetime(df['ordered_date'], errors='coerce')
-
     # ===================== KPIs =====================
     total_units = df['units_sold'].sum()
 
     latest_date = df['ordered_date'].max()
+    
     if pd.isnull(latest_date):
         latest_month = "Unknown"
         latest_units = 0
     else:
         latest_month = latest_date.strftime('%B')
-        latest_data = df[df['month'] == latest_month]
+        # Fast boolean indexing
+        # Note: We rely on the DB 'month' column matching the strftime format
+        # If the DB month column is unreliable, use: df[df['ordered_date'].dt.month == latest_date.month]
+        if 'month' in df.columns and latest_month in df['month'].values:
+             latest_data = df[df['month'] == latest_month]
+        else:
+             # Fallback: calculate based on date
+             latest_data = df[df['ordered_date'] >= (latest_date - pd.Timedelta(days=30))]
+             
         latest_units = latest_data['units_sold'].sum()
 
     # ===================== Card Styling =====================
@@ -91,7 +113,6 @@ def page():
 
     col1, col2 = st.columns(2)
 
-    # Latest month KPI
     with col1:
         st.markdown(f"""
         <div style="{card_style}">
@@ -101,7 +122,6 @@ def page():
         </div>
         """, unsafe_allow_html=True)
 
-    # Total units
     with col2:
         st.markdown(f"""
         <div style="{card_style}">
@@ -111,19 +131,19 @@ def page():
         </div>
         """, unsafe_allow_html=True)
 
-    # ===================== Units Chart: Last 30 Days =====================
-
-    # Check for empty data before grouping
-    if df.empty:
-        st.warning("No data available for chart.")
-        return
+    # ===================== Chart Section =====================
 
     # Last 30 days filter based on MAX date in data
     max_date = df['ordered_date'].max()
-    df_30 = df[
-        df['ordered_date'] >= (max_date - pd.Timedelta(days=30))
-    ]
+    start_date = max_date - pd.Timedelta(days=30)
+    
+    df_30 = df[df['ordered_date'] >= start_date]
 
+    if df_30.empty:
+        st.warning("No data available for the last 30 days.")
+        return
+
+    # observed=True speeds up groupby on categories (if ordered_date were categorical)
     df_daily = df_30.groupby('ordered_date', as_index=False).agg({
         'units_sold': 'sum'
     })

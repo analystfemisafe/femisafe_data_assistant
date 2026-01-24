@@ -12,3 +12,5 @@ langchain-experimental==0.3.4
 langchain-openai==0.2.1
 ollama
 openai>=1.51.0
+langchain-openai
+langchain-google-genai

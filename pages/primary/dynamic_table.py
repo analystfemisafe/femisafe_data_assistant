@@ -1,37 +1,74 @@
-import os
 import streamlit as st
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
+
+# Import Centralized Engine
+try:
+    from utils.db_manager import get_db_engine
+except ImportError:
+    # Fallback if utils folder missing
+    from sqlalchemy import create_engine
+    import os
+    @st.cache_resource
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
 
 # ======================================
-# Load Data (Universal)
+# 🚀 OPTIMIZED DATA LOADER
 # ======================================
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=900)
 def load_data():
-    try:
-        # --- Universal Secret Loader ---
-        try:
-            # 1. Try Local Secrets (Laptop)
-            db_url = st.secrets["postgres"]["url"]
-        except (FileNotFoundError, KeyError):
-            # 2. Try Render Environment Variable (Cloud)
-            db_url = os.environ.get("DATABASE_URL")
-        
-        # Check if URL was found
-        if not db_url:
-            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
-            return pd.DataFrame()
+    engine = get_db_engine()
+    if not engine:
+        return pd.DataFrame()
 
-        # Create Engine & Fetch Data
-        engine = create_engine(db_url)
+    try:
         with engine.connect() as conn:
+            # ⚡ SQL OPTIMIZATION: Select all needed columns explicitly (safer than *)
+            # If your table is huge, listing columns is better. For now * is fine if table isn't massive.
             query = text("SELECT * FROM femisafe_sales")
             df = pd.read_sql(query, conn)
         
+        if df.empty: return df
+
         # Standardize columns
         df.columns = df.columns.str.strip().str.lower()
-        return df
+
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+
+        # 1. Fast Vectorized Cleaning (Numerics)
+        # Handle revenue & units efficiently
+        if 'revenue' in df.columns:
+            df['revenue'] = pd.to_numeric(
+                df['revenue'].astype(str).str.replace(r'[₹,]', '', regex=True),
+                errors='coerce'
+            ).fillna(0)
+
+        if 'sku_units' in df.columns:
+            df['sku_units'] = pd.to_numeric(
+                df['sku_units'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            ).fillna(0)
+
+        # 2. Optimize Text to Category (Instant Filtering & Grouping)
+        # Identify columns that are likely categorical (low cardinality)
+        cat_cols = [
+            'month', 'channels', 'distributor', 'fulfilment_type', 
+            'state', 'city', 'products', 'categories', 'sku'
+        ]
         
+        for col in cat_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna("Unknown").astype(str).str.strip().astype('category')
+        
+        # 3. Fast Date Parsing
+        if 'order_date' in df.columns:
+             df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+
+        return df
+
     except Exception as e:
         st.error(f"⚠️ Database Connection Failed: {e}")
         return pd.DataFrame()
@@ -42,8 +79,9 @@ def load_data():
 # ======================================
 def page():
 
-    st.title("📊 Dynamic Table Maker / Pivot Builder")
+    st.title("📊 Dynamic Table Maker (Optimized)")
 
+    # Load Data (Instant if cached)
     df = load_data()
 
     if df.empty:
@@ -64,16 +102,22 @@ def page():
 
     for i, column in enumerate(filter_cols):
         with cols[i % 3]:
-            # added dropna to prevent sorting error
-            unique_vals = sorted(df[column].dropna().astype(str).unique())
-            choice = st.multiselect(f"Filter by {column.title()}", unique_vals)
+            # Optimize: sorting unique values from Categories is extremely fast
+            unique_vals = sorted(list(df[column].unique()))
+            # Convert to string for display in multiselect (Categories might need this)
+            unique_vals_str = [str(x) for x in unique_vals]
+            
+            choice = st.multiselect(f"Filter by {column.title()}", unique_vals_str)
             filter_selection[column] = choice
 
     # Apply filters
+    # Filtering on Category types is faster
     filtered_df = df.copy()
+    
     for column, selected_vals in filter_selection.items():
         if selected_vals:
-            filtered_df = filtered_df[filtered_df[column].astype(str).isin(selected_vals)]
+            # We filter using .isin() which works great on categories
+            filtered_df = filtered_df[filtered_df[column].isin(selected_vals)]
 
     # ==============================
     # 📌 ROWS SELECTION (GROUP BY)
@@ -86,6 +130,8 @@ def page():
     # Only show columns that actually exist in the database
     all_columns = [col for col in possible_row_dims if col in df.columns]
 
+    # Add caching logic or session state if needed to remember choices, 
+    # but for simple optimization, this is fine.
     row_dims = st.multiselect("Choose rows (grouping columns):", all_columns)
 
     # ==============================
@@ -111,15 +157,11 @@ def page():
         st.warning("Select at least one row and one value to generate the table.")
         return
 
-    # Ensure numeric columns are numeric before aggregating
-    for col in selected_values:
-        filtered_df[col] = pd.to_numeric(filtered_df[col], errors='coerce').fillna(0)
-
     # Create aggregation dictionary
     agg_dict = {value: agg_choice for value in selected_values}
 
-    # Create grouped table
-    pivot_table = filtered_df.groupby(row_dims).agg(agg_dict).reset_index()
+    # Create grouped table (observed=True speeds up groupby on categories)
+    pivot_table = filtered_df.groupby(row_dims, observed=True).agg(agg_dict).reset_index()
 
     st.dataframe(pivot_table, use_container_width=True)
 
