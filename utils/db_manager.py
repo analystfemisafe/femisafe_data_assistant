@@ -26,14 +26,15 @@ def get_db_engine():
             return None
 
         # Create engine with connection pooling settings
-        # pool_size=5 means we keep 5 connections open and reuse them.
-        # This drastically reduces the "handshake" overhead that burns compute hours.
         engine = create_engine(
             db_url,
             pool_size=5,        
             max_overflow=10,    
             pool_timeout=30,    
-            pool_recycle=1800   
+            pool_recycle=1800,
+            # ⬇️ CRITICAL FIX FOR SUPABASE TRANSACTION MODE (Port 6543)
+            # This disables prepared statements, which prevents errors with the pooler.
+            connect_args={"prepare_threshold": None} 
         )
         return engine
 
