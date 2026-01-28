@@ -1,11 +1,16 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
+import os
 
 # ------------------------------------------------------
 # 1. PAGE SETUP
 # ------------------------------------------------------
-st.set_page_config(page_title="FemiSafe Analytics", layout="wide")
+st.set_page_config(page_title="FemiSafe Analytics", layout="wide", page_icon="📊")
+
+# Initialize 'nav_mode' if it doesn't exist
+if 'nav_mode' not in st.session_state:
+    st.session_state.nav_mode = "Primary"
 
 # ------------------------------------------------------
 # 2. OPTIMIZED DB CONNECTION (Centralized)
@@ -15,50 +20,43 @@ try:
 except ImportError:
     # Fallback if utils folder missing (Safety net)
     from sqlalchemy import create_engine
-    import os
     @st.cache_resource
     def get_db_engine():
         return create_engine(os.environ.get("DATABASE_URL"))
 
-# ------------------------------------------------------
+# ---------------------------------------------------------
 # 3. SIDEBAR NAVIGATION
-# ------------------------------------------------------
-st.sidebar.markdown("""
-<style>
-.selector-buttons { display: flex; gap: 10px; }
-.selector-buttons button { flex: 1; }
-</style>
-""", unsafe_allow_html=True)
+# ---------------------------------------------------------
+with st.sidebar:
+    st.header("Navigation Mode")
+    
+    # --- TOP ROW: PRIMARY / SECONDARY DASHBOARDS ---
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Primary", use_container_width=True):
+            st.session_state.nav_mode = "Primary"
+    with col2:
+        if st.button("Secondary", use_container_width=True):
+            st.session_state.nav_mode = "Secondary"
+            
+    st.markdown("---") # Visual separator
 
-st.sidebar.markdown("### Navigation Mode")
+    # --- T-1 SUMMARY (Standalone Feature) ---
+    if st.button("📉 T-1 Summary", use_container_width=True):
+        st.session_state.nav_mode = "T-1"
 
-# Initialize Session State
-if "nav_mode" not in st.session_state:
-    st.session_state.nav_mode = "Primary"
-
-# --- TOP BUTTONS (Primary / Secondary) ---
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.button("Primary"):
-        st.session_state.nav_mode = "Primary"
-with col2:
-    if st.button("Secondary"):
-        st.session_state.nav_mode = "Secondary"
-
-# --- SPECIAL BUTTONS (Data Assistant / Admin) ---
-st.sidebar.markdown("---")
-if st.sidebar.button("📊 Data Assistant", use_container_width=True):
-    st.session_state.nav_mode = "Data Assistant"
-
-if st.sidebar.button("⚙️ Admin Panel", use_container_width=True):
-    st.session_state.nav_mode = "Admin Panel"
-
-# Get Current Mode
-mode = st.session_state.nav_mode
+    # --- TOOLS SECTION ---
+    if st.button("🤖 Data Assistant", use_container_width=True):
+        st.session_state.nav_mode = "Data Assistant"
+        
+    if st.button("⚙️ Admin Panel", use_container_width=True):
+        st.session_state.nav_mode = "Admin Panel"
 
 # ------------------------------------------------------
-# 4. PAGE LOGIC (LAZY LOADING WITH ORIGINAL NAMES)
+# 4. PAGE ROUTING LOGIC
 # ------------------------------------------------------
+# ✅ Retrieve the current mode from session state
+mode = st.session_state.nav_mode 
 
 # --- PRIMARY DASHBOARDS ---
 if mode == "Primary":
@@ -73,23 +71,58 @@ if mode == "Primary":
         from pages.primary.overall_sales_overview import page
         page()
     elif primary_choice == "Statewise Trends":
-        # Kept original filename: statewise_sku_trends
         from pages.primary.statewise_sku_trends import page
         page()
     elif primary_choice == "Product Performance":
         from pages.primary.product_performance import page
         page()
     elif primary_choice == "Special Primary Charts":
-        # Kept original filename: special_primary_charts
         from pages.primary.special_primary_charts import page
         page()
     elif primary_choice == "Target 3 Months":
-        # Kept original filename: target_3_months
         from pages.primary.target_3_months import page
         page()
     elif primary_choice == "Dynamic Table":
         from pages.primary.dynamic_table import page
         page()
+
+# --- T-1 DASHBOARD (Redesigned) ---
+elif mode == "T-1":
+    st.sidebar.subheader("T-1 (Yesterday) Analysis")
+    
+    # 1. CHANNEL SELECTION
+    t1_channel = st.sidebar.radio("Select Vertical", ["Sales Summary", "Ads Performance"])
+    
+    # 2. REPORT SELECTION
+    if t1_channel == "Sales Summary":
+        t1_report = st.sidebar.selectbox(
+            "Choose Report", 
+            ["DRR (Daily Run Rate)", "Blinkit Product-wise", "Blinkit City-wise"]
+        )
+        
+        if t1_report == "DRR (Daily Run Rate)":
+            from pages.t1.reports.drr import show_drr
+            show_drr()
+            
+        elif t1_report == "Blinkit Product-wise":
+            from pages.t1.reports.blinkit_product import show_report
+            show_report()
+            
+        elif t1_report == "Blinkit City-wise":
+            from pages.t1.reports.blinkit_city import show_report
+            show_report()
+
+    elif t1_channel == "Ads Performance":
+        t1_report = st.sidebar.selectbox(
+            "Choose Report",
+            ["Ad Overview", "Campaign Analysis"] 
+        )
+        
+        if t1_report == "Ad Overview":
+            from pages.t1.ad_performance import page
+            page()
+        else:
+            st.info("🚧 Report under construction")
 
 # --- SECONDARY DASHBOARDS ---
 elif mode == "Secondary":
@@ -127,10 +160,8 @@ elif mode == "Secondary":
     # --- BLINKIT PAGES ---
     elif channel_choice == "Blinkit":
         if report_choice == "Sales Dashboard": 
-            # Kept original filename: blinkit_sales_dashboard
             from pages.secondary.blinkit.blinkit_sales_dashboard import page; page()
         elif report_choice == "Productwise Performance": 
-            # Kept original filename: blinkit_productwise_performance
             from pages.secondary.blinkit.blinkit_productwise_performance import page; page()
         elif report_choice == "Citywise Performance": 
             from pages.secondary.blinkit.blinkit_citywise_performance import page; page()

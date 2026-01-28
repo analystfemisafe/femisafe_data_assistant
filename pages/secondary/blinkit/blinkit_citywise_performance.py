@@ -154,7 +154,6 @@ def page():
     subtotal_rows = []
     
     # Iterate through each warehouse group
-    # Using observed=True is faster
     for feeder, group in pivot.groupby('feeder_wh', observed=True):
         group = group.copy()
         
@@ -229,7 +228,26 @@ def page():
 
     final_df.columns = pd.MultiIndex.from_tuples(new_cols)
 
-    st.dataframe(final_df, use_container_width=True, height=600)
+    # ================= 🎨 STYLING: Highlight "Total" Rows =================
+    
+    def highlight_totals(row):
+        """
+        Highlights rows where the SKU column contains 'Total'.
+        """
+        # We access the MultiIndex column for SKU using the tuple ('SKU', '')
+        sku_val = str(row[('SKU', '')])
+        
+        if "Total" in sku_val:
+            # ✨ Color: Light Yellow background + Bold Text
+            return ['background-color: #ffffcc; font-weight: bold; color: #333333'] * len(row)
+        else:
+            return [''] * len(row)
+
+    # Apply the style
+    styled_df = final_df.style.apply(highlight_totals, axis=1)
+
+    # Render the styled dataframe
+    st.dataframe(styled_df, use_container_width=True, height=600)
 
     # ---------------------------------------------------------
     # FILTERS (Side-by-side — Product + Warehouse)
