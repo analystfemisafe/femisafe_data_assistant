@@ -15,7 +15,7 @@ except ImportError:
         return create_engine(os.environ.get("DATABASE_URL"))
 
 # ---------------------------------------------------------
-# 🚀 OPTIMIZED DATA LOADER
+# 🚀 OPTIMIZED DATA LOADER (Last 365 Days Only)
 # ---------------------------------------------------------
 @st.cache_data(ttl=900)
 def get_amazon_data():
@@ -25,7 +25,8 @@ def get_amazon_data():
 
     try:
         with engine.connect() as conn:
-            # ⚡ SQL OPTIMIZATION: Fetch only needed columns
+            # ⚡ SQL OPTIMIZATION: Added WHERE clause to prevent timeouts
+            # Only fetches data from the last 1 year
             query = text("""
                 SELECT
                     date,
@@ -34,6 +35,7 @@ def get_amazon_data():
                     net_revenue,
                     units_sold
                 FROM femisafe_amazon_salesdata
+                WHERE date >= CURRENT_DATE - INTERVAL '365 days'
             """)
             df = pd.read_sql(query, conn)
         
@@ -56,12 +58,11 @@ def get_amazon_data():
                 errors='coerce'
             ).fillna(0).astype('int32')
 
-        # 2. Fast Date Parsing (dayfirst=True fixes date flipping)
+        # 2. Fast Date Parsing
         df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
         df.dropna(subset=['date'], inplace=True)
         
-        # 3. Optimize Text to Category (Instant filtering)
-        # Handle product column (fill NaN before converting)
+        # 3. Optimize Text to Category
         df['product'] = df['product'].fillna("Unknown").astype(str).str.strip().astype('category')
         
         # 4. Create Month Column
@@ -84,7 +85,7 @@ def page():
     df_amz = get_amazon_data()
 
     if df_amz.empty:
-        st.warning("No Amazon data available.")
+        st.warning("No Amazon data available (or connection timed out).")
         return
 
     # ===================== KPIs =====================
@@ -134,14 +135,12 @@ def page():
         <div style="{card_style}">
             <p style="{number_style}">{int(total_units):,}</p>
             <p style="{units_style}">units</p>
-            <p style="{label_style}">Total Units Sold (All Months)</p>
+            <p style="{label_style}">Total Units Sold (Last 365 Days)</p>
         </div>
         """, unsafe_allow_html=True)
 
     # ===================== Product Filter =====================
 
-    # Categories are fast to get unique values from
-    # Convert to list for sorting in selectbox
     product_list = sorted(list(df_amz['product'].unique()))
 
     selected_product = st.selectbox(
@@ -150,7 +149,7 @@ def page():
         index=0
     )
 
-    # Apply filter (Category filtering is fast)
+    # Apply filter
     if selected_product != "All Products":
         df_amz = df_amz[df_amz['product'] == selected_product]
 

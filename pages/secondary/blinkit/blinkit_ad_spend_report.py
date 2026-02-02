@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
-import numpy as np  # <--- Added this missing import
+import numpy as np
 from sqlalchemy import text
+import textwrap
+from datetime import datetime, timedelta
 
 # Import Centralized Engine
 try:
     from utils.db_manager import get_db_engine
 except ImportError:
-    # Fallback if utils folder missing
     from sqlalchemy import create_engine
     import os
     @st.cache_resource
@@ -15,282 +16,344 @@ except ImportError:
         return create_engine(os.environ.get("DATABASE_URL"))
 
 # ---------------------------------------------------------
-# 🚀 OPTIMIZED DATA LOADER: AD DATA
+# 🎨 COLOR LOGIC
 # ---------------------------------------------------------
-@st.cache_data(ttl=900)
-def get_blinkit_addata():
-    engine = get_db_engine()
-    if not engine: return pd.DataFrame()
-
-    try:
-        with engine.connect() as conn:
-            # ⚡ Select ALL is okay here if table is small, otherwise select specific columns
-            query = text("SELECT * FROM femisafe_blinkit_addata")
-            df = pd.read_sql(query, conn)
-        
-        if df.empty: return df
-
-        # =========================================================
-        # ⚡ FAST CLEANING & OPTIMIZATION
-        # =========================================================
-        
-        # 1. Vectorized Cleaning (Regex is faster than chained replace)
-        cols_to_clean = ['estimated_budget_consumed', 'direct_sales', 'impressions', 'clicks', 'roas']
-        for col in cols_to_clean:
-            if col in df.columns:
-                df[col] = pd.to_numeric(
-                    df[col].astype(str).str.replace(r'[₹,%]', '', regex=True),
-                    errors='coerce'
-                ).fillna(0)
-
-        # 2. Fast Date Parsing (dayfirst=True prevents date flipping)
-        df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
-        
-        # 3. Optimize Text to Category
-        if 'product_name' in df.columns:
-            df['product_name'] = df['product_name'].astype(str).str.strip().astype('category')
-
-        return df
-        
-    except Exception as e:
-        st.error(f"⚠️ Error fetching Ad Data: {e}")
-        return pd.DataFrame()
-
-# ---------------------------------------------------------
-# 🚀 OPTIMIZED DATA LOADER: SALES DATA
-# ---------------------------------------------------------
-@st.cache_data(ttl=900)
-def get_blinkit_salesdata():
-    engine = get_db_engine()
-    if not engine: return pd.DataFrame()
-
-    try:
-        with engine.connect() as conn:
-            # ⚡ Only fetch columns needed for this report
-            query = text("SELECT order_date, product, total_gross_bill_amount FROM femisafe_blinkit_salesdata")
-            df = pd.read_sql(query, conn)
-            
-        if df.empty: return df
-
-        # 1. Clean Revenue
-        if 'total_gross_bill_amount' in df.columns:
-            df['total_gross_bill_amount'] = pd.to_numeric(
-                df['total_gross_bill_amount'].astype(str).str.replace(r'[₹,]', '', regex=True),
-                errors='coerce'
-            ).fillna(0)
-        
-        # 2. Fast Date Parsing
-        df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
-        
-        # 3. Optimize Product Name
-        if 'product' in df.columns:
-            df['product'] = df['product'].astype(str).str.strip().astype('category')
-
-        return df
-        
-    except Exception as e:
-        st.error(f"⚠️ Error fetching Sales Data: {e}")
-        return pd.DataFrame()
+def color_growth(val):
+    if pd.isna(val) or val == 0:
+        return 'color: #333'
     
-# ===========================================================
-# PAGE
-# ===========================================================
-def page():
+    bg = '#d4edda' if val > 0 else '#f8d7da' 
+    text_color = '#155724' if val > 0 else '#721c24'
+    
+    return f'background-color: {bg}; color: {text_color}; font-weight: bold;'
 
-    st.markdown("### 📊 Blinkit Ad Report (Optimized)")
+# ---------------------------------------------------------
+# 🚀 DATA LOADER
+# ---------------------------------------------------------
+@st.cache_data(ttl=900)
+def get_data():
+    engine = get_db_engine()
+    if not engine: return pd.DataFrame(), pd.DataFrame()
 
-    # Load Data (Instant if cached)
-    df_ad = get_blinkit_addata()
-    df_sales = get_blinkit_salesdata()
+    try:
+        with engine.connect() as conn:
+            # 1. Fetch Ad Data
+            ad_query = text("SELECT * FROM femisafe_blinkit_addata")
+            df_ad = pd.read_sql(ad_query, conn)
+            
+            # 2. Fetch Sales Data
+            sales_query = text("SELECT order_date, product, total_gross_bill_amount FROM femisafe_blinkit_salesdata")
+            df_sales = pd.read_sql(sales_query, conn)
+            
+        return df_ad, df_sales
 
-    if df_ad.empty:
-        st.warning("No Ad Data Found.")
-        return
-    if df_sales.empty:
-        st.warning("No Sales Data Found.")
-        return
+    except Exception as e:
+        st.error(f"⚠️ Error fetching data: {e}")
+        return pd.DataFrame(), pd.DataFrame()
 
-    # ===================== METRIC CARDS =====================
+def process_data(df_ad, df_sales, target_date):
+    if df_ad.empty: st.warning("Ad Data is empty from DB"); return pd.DataFrame(), None, None
+    if df_sales.empty: st.warning("Sales Data is empty from DB"); return pd.DataFrame(), None, None
 
-    card_style = """
-        background-color: #3a3a3a;
-        color: white;
-        padding: 25px 10px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        width: 100%;
-    """
-    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
-    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0;"
-    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+    # ---------------------------------------------------------
+    # 🧹 CLEANING AD DATA
+    # ---------------------------------------------------------
+    
+    # Force convert dates
+    df_ad['date'] = pd.to_datetime(df_ad['date'], dayfirst=True, errors='coerce')
 
-    # Valid Dates Check
-    latest_date = df_ad['date'].max()
-    if pd.isnull(latest_date):
-        st.error("Invalid Dates in Ad Data.")
-        return
-        
-    latest_month = df_ad['date'].dt.to_period('M').max()
-
-    # Card Values
-    month_spend = df_ad[df_ad['date'].dt.to_period('M') == latest_month]['estimated_budget_consumed'].sum()
-    day_spend = df_ad[df_ad['date'] == latest_date]['estimated_budget_consumed'].sum()
-
-    seven_days_ago = latest_date - pd.Timedelta(days=7)
-    df_last7 = df_ad[(df_ad['date'] >= seven_days_ago) & (df_ad['date'] <= latest_date)]
-
-    total_spend_7 = df_last7['estimated_budget_consumed'].sum()
-    total_sales_7 = df_last7['direct_sales'].sum()
-
-    if total_spend_7 > 0:
-        last7_roas = total_sales_7 / total_spend_7
+    # Fix Metrics
+    if 'estimated_budget_consumed' in df_ad.columns:
+        df_ad['estimated_budget_consumed'] = pd.to_numeric(df_ad['estimated_budget_consumed'], errors='coerce').fillna(0)
     else:
-        last7_roas = 0
+        df_ad['estimated_budget_consumed'] = 0
 
-    col1, col2, col3 = st.columns(3)
+    if 'direct_sales' in df_ad.columns:
+        df_ad['direct_sales'] = pd.to_numeric(
+            df_ad['direct_sales'].astype(str).str.replace(r'[₹,]', '', regex=True), 
+            errors='coerce'
+        ).fillna(0)
+    else:
+        df_ad['direct_sales'] = 0
 
-    with col1:
-        st.markdown(f"""
-            <div style="{card_style}">
-                <p style="{number_style}">₹{month_spend:,.0f}</p>
-                <p style="{units_style}">{latest_month.strftime('%B %Y')}</p>
-                <p style="{label_style}">Latest Month Spend</p>
-            </div>
-        """, unsafe_allow_html=True)
+    # Create Join Key
+    if 'product_name' in df_ad.columns:
+        df_ad['join_key'] = df_ad['product_name'].astype(str).str.strip().str.lower()
+    else:
+        df_ad['join_key'] = "unknown"
 
-    with col2:
-        st.markdown(f"""
-            <div style="{card_style}">
-                <p style="{number_style}">₹{day_spend:,.0f}</p>
-                <p style="{units_style}">{latest_date.strftime('%b %d, %Y')}</p>
-                <p style="{label_style}">Latest Day Spend</p>
-            </div>
-        """, unsafe_allow_html=True)
+    # ---------------------------------------------------------
+    # 🧹 CLEANING SALES DATA
+    # ---------------------------------------------------------
+    df_sales['gross_sales'] = pd.to_numeric(df_sales['total_gross_bill_amount'].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
+    
+    # Force convert dates
+    df_sales['order_date'] = pd.to_datetime(df_sales['order_date'], dayfirst=True, errors='coerce')
+    
+    if 'product' in df_sales.columns:
+        df_sales['join_key'] = df_sales['product'].astype(str).str.strip().str.lower()
+    else:
+        df_sales['join_key'] = "unknown"
 
-    with col3:
-        roas_display = f"{last7_roas:.2f}×"
-        st.markdown(f"""
-            <div style="{card_style}">
-                <p style="{number_style}">{roas_display}</p>
-                <p style="{units_style}">Last 7 Days</p>
-                <p style="{label_style}">Average ROAS</p>
-            </div>
-        """, unsafe_allow_html=True)
+    # ---------------------------------------------------------
+    # 📅 FILTERING
+    # ---------------------------------------------------------
+    curr_date_ts = pd.to_datetime(target_date)
+    prev_date_ts = curr_date_ts - pd.Timedelta(days=1)
+    
+    # Add explicit date_col for grouping (Strings ensure exact matching)
+    df_ad['date_col'] = df_ad['date'].dt.date.astype(str)
+    df_sales['date_col'] = df_sales['order_date'].dt.date.astype(str)
+    
+    target_dates_str = [str(curr_date_ts.date()), str(prev_date_ts.date())]
 
-    # ===================== DATA FOR TABLE =====================
+    # Filter
+    ad_filt = df_ad[df_ad['date_col'].isin(target_dates_str)].copy()
+    sales_filt = df_sales[df_sales['date_col'].isin(target_dates_str)].copy()
 
-    prev_date = latest_date - pd.Timedelta(days=1)
+    if ad_filt.empty and sales_filt.empty:
+        return pd.DataFrame(), curr_date_ts, prev_date_ts
 
-    # Filter last 2 days
-    df_ad_last2 = df_ad[df_ad['date'].isin([latest_date, prev_date])]
-    df_sales_last2 = df_sales[df_sales['order_date'].isin([latest_date, prev_date])]
-
-    # Aggregate Ads by Product & Date (observed=True for speed)
-    ad_summary = df_ad_last2.groupby(['product_name', 'date'], observed=True, as_index=False).agg({
-        'estimated_budget_consumed': 'sum',
-        'direct_sales': 'sum'
+    # ---------------------------------------------------------
+    # 🔗 AGGREGATION
+    # ---------------------------------------------------------
+    
+    # Group Ads
+    # We use explicit columns now, avoiding the complex groupby key issue
+    ad_grp = ad_filt.groupby(['join_key', 'date_col'], as_index=False).agg({
+        'estimated_budget_consumed': 'sum', 
+        'direct_sales': 'sum',
+        'product_name': 'first' 
     })
 
-    # Aggregate Sales by Product & Date
-    sales_summary = df_sales_last2.groupby(['product', 'order_date'], observed=True, as_index=False).agg({
-        'total_gross_bill_amount': 'sum'
-    }).rename(columns={'order_date': 'date', 'total_gross_bill_amount': 'gross_sales'})
+    # Group Sales
+    sales_grp = sales_filt.groupby(['join_key', 'date_col'], as_index=False).agg({
+        'gross_sales': 'sum',
+        'product': 'first'
+    })
 
-    # Merge Ads + Sales
-    # Note: Merging on Categorical columns is faster if categories match
-    merged = pd.merge(ad_summary, sales_summary,
-                      left_on=['product_name', 'date'],
-                      right_on=['product', 'date'],
-                      how='outer') 
-
-    # Fill NaNs with 0
-    merged['estimated_budget_consumed'] = merged['estimated_budget_consumed'].fillna(0)
-    merged['direct_sales'] = merged['direct_sales'].fillna(0)
-    merged['gross_sales'] = merged['gross_sales'].fillna(0)
+    # ---------------------------------------------------------
+    # 🔗 MERGE (Fix for KeyError: 'date_col')
+    # ---------------------------------------------------------
     
-    # Consolidate Product Names
-    # We convert to object temporarily to fillna, then back to category if needed
-    merged['product_name'] = merged['product_name'].astype(object).fillna(merged['product'].astype(object))
-    merged = merged.drop(columns=['product'])
+    # Both DataFrames correspond exactly now: ['join_key', 'date_col', metrics...]
+    merged = pd.merge(ad_grp, sales_grp, on=['join_key', 'date_col'], how='outer').fillna(0)
 
-    # ROAS Calculations
-    # Vectorized calculation is faster than apply
-    merged['direct_roas'] = np.where(merged['estimated_budget_consumed'] > 0, 
-                                     merged['direct_sales'] / merged['estimated_budget_consumed'], 0)
-    merged['roas'] = np.where(merged['estimated_budget_consumed'] > 0, 
-                              merged['gross_sales'] / merged['estimated_budget_consumed'], 0)
+    # Coalesce Product Name
+    merged['display_name'] = np.where(merged['product_name'] != 0, merged['product_name'], merged['product'])
     
-    # Pivot Table
+    # ---------------------------------------------------------
+    # 🔄 PIVOT
+    # ---------------------------------------------------------
     pivot = merged.pivot_table(
-        index='product_name',
-        columns='date',
-        values=['estimated_budget_consumed', 'direct_sales', 'gross_sales', 'direct_roas', 'roas'],
+        index='display_name', 
+        columns='date_col', 
+        values=['estimated_budget_consumed', 'direct_sales', 'gross_sales'], 
         aggfunc='sum'
-    )
-
+    ).fillna(0)
+    
     # Flatten Columns
-    pivot.columns = [f"{metric}_{date.strftime('%b %d')}" for metric, date in pivot.columns]
-    pivot = pivot.reset_index()
-
-    prev_label = prev_date.strftime("%b %d")
-    latest_label = latest_date.strftime("%b %d")
-
-    # Ensure required columns exist
-    req_cols = [
-        f'gross_sales_{latest_label}', f'gross_sales_{prev_label}',
-        f'estimated_budget_consumed_{latest_label}', f'estimated_budget_consumed_{prev_label}'
-    ]
-    for col in req_cols:
-        if col not in pivot.columns:
-            pivot[col] = 0
-
-    # Growth Calculations (Vectorized)
+    pivot.columns = [f"{col[0]}_{col[1]}" for col in pivot.columns]
     
-    col_sales_curr = f'gross_sales_{latest_label}'
-    col_sales_prev = f'gross_sales_{prev_label}'
-    pivot['Gross_Sales_Growth_%'] = np.where(
-        pivot[col_sales_prev] > 0,
-        ((pivot[col_sales_curr] - pivot[col_sales_prev]) / pivot[col_sales_prev] * 100),
-        0
-    )
-
-    col_spend_curr = f'estimated_budget_consumed_{latest_label}'
-    col_spend_prev = f'estimated_budget_consumed_{prev_label}'
-    pivot['Ad_Spend_Growth_%'] = np.where(
-        pivot[col_spend_prev] > 0,
-        ((pivot[col_spend_curr] - pivot[col_spend_prev]) / pivot[col_spend_prev] * 100),
-        0
-    )
-
-    # Sort
-    pivot = pivot.sort_values(by=f'gross_sales_{latest_label}', ascending=False)
-
-    # ===================== Total Row =====================
-    total_data = {'product_name': '🏆 TOTAL'}
+    # Define Lookup Keys
+    curr_key = str(curr_date_ts.date())
+    prev_key = str(prev_date_ts.date())
     
-    for col in pivot.columns:
-        if col != 'product_name':
-            if "Growth" in col:
-                total_data[col] = pivot[col].mean()
+    def get_col(metric, date_key):
+        col_name = f"{metric}_{date_key}"
+        return pivot[col_name] if col_name in pivot.columns else 0
+
+    d1_spend = get_col('estimated_budget_consumed', prev_key)
+    d1_ad_sales = get_col('direct_sales', prev_key)
+    d1_gross_sales = get_col('gross_sales', prev_key)
+    
+    curr_spend = get_col('estimated_budget_consumed', curr_key)
+    curr_ad_sales = get_col('direct_sales', curr_key)
+    curr_gross_sales = get_col('gross_sales', curr_key)
+
+    res = pd.DataFrame(index=pivot.index)
+    
+    # T-1 Stats
+    res['D1_Ad_Spend'] = d1_spend
+    res['D1_Ad_Sales'] = d1_ad_sales
+    res['D1_Gross_Sales'] = d1_gross_sales
+    res['D1_Direct_ROAS'] = np.where(d1_spend > 0, d1_ad_sales / d1_spend, 0)
+    res['D1_ROAS'] = np.where(d1_spend > 0, d1_gross_sales / d1_spend, 0)
+
+    # Current Stats
+    res['Curr_Ad_Spend'] = curr_spend
+    res['Curr_Ad_Sales'] = curr_ad_sales
+    res['Curr_Gross_Sales'] = curr_gross_sales
+    res['Curr_Direct_ROAS'] = np.where(curr_spend > 0, curr_ad_sales / curr_spend, 0)
+    res['Curr_ROAS'] = np.where(curr_spend > 0, curr_gross_sales / curr_spend, 0)
+
+    # Growth
+    res['Growth_Gross_Sales'] = np.where(d1_gross_sales > 0, ((curr_gross_sales - d1_gross_sales) / d1_gross_sales) * 100, 0)
+    res['Growth_Ad_Spend'] = np.where(d1_spend > 0, ((curr_spend - d1_spend) / d1_spend) * 100, 0)
+
+    res = res.sort_values('Curr_Gross_Sales', ascending=False)
+
+    # Grand Total
+    if not res.empty:
+        total_row = pd.DataFrame(index=['Grand Total'])
+        for col in ['D1_Ad_Spend', 'D1_Ad_Sales', 'D1_Gross_Sales', 'Curr_Ad_Spend', 'Curr_Ad_Sales', 'Curr_Gross_Sales']:
+            total_row[col] = res[col].sum()
+            
+        total_row['D1_Direct_ROAS'] = np.where(total_row['D1_Ad_Spend'] > 0, total_row['D1_Ad_Sales'] / total_row['D1_Ad_Spend'], 0)
+        total_row['D1_ROAS'] = np.where(total_row['D1_Ad_Spend'] > 0, total_row['D1_Gross_Sales'] / total_row['D1_Ad_Spend'], 0)
+        total_row['Curr_Direct_ROAS'] = np.where(total_row['Curr_Ad_Spend'] > 0, total_row['Curr_Ad_Sales'] / total_row['Curr_Ad_Spend'], 0)
+        total_row['Curr_ROAS'] = np.where(total_row['Curr_Ad_Spend'] > 0, total_row['Curr_Gross_Sales'] / total_row['Curr_Ad_Spend'], 0)
+        
+        total_row['Growth_Gross_Sales'] = np.where(total_row['D1_Gross_Sales'] > 0, ((total_row['Curr_Gross_Sales'] - total_row['D1_Gross_Sales']) / total_row['D1_Gross_Sales']) * 100, 0)
+        total_row['Growth_Ad_Spend'] = np.where(total_row['D1_Ad_Spend'] > 0, ((total_row['Curr_Ad_Spend'] - total_row['D1_Ad_Spend']) / total_row['D1_Ad_Spend']) * 100, 0)
+
+        final_df = pd.concat([res, total_row])
+    else:
+        final_df = pd.DataFrame()
+    
+    return final_df, curr_date_ts, prev_date_ts
+
+# ---------------------------------------------------------
+# 📄 MAIN PAGE
+# ---------------------------------------------------------
+def page():
+    st.markdown("### 📢 Blinkit Ad Spend & ROAS Report")
+
+    # 1. Date Picker
+    col1, col2 = st.columns([2, 5])
+    with col1:
+        default_date = datetime.now().date() - timedelta(days=1)
+        selected_date = st.date_input("Select Report Date", value=default_date)
+
+    # Load & Process
+    df_ad, df_sales = get_data()
+    
+    # 🔍 TROUBLESHOOTING BOX (SAFE MODE)
+    with st.expander("🔍 Debug Raw Data"):
+        if not df_ad.empty:
+            df_ad['date'] = pd.to_datetime(df_ad['date'], dayfirst=True, errors='coerce')
+            check_date = pd.to_datetime(selected_date)
+            mask = df_ad['date'].dt.normalize() == check_date
+            rows = df_ad[mask]
+            st.write(f"Found {len(rows)} Ad rows for {selected_date}")
+            if len(rows) > 0:
+                st.dataframe(rows.head(3))
             else:
-                total_data[col] = pivot[col].sum()
+                st.write("First 3 Rows of Raw Ad Data (Check Dates):")
+                st.dataframe(df_ad.head(3))
+        else:
+            st.write("Ad DataFrame is Empty")
 
-    total_row = pd.DataFrame([total_data])
-    pivot = pd.concat([pivot, total_row], ignore_index=True)
+    final_df, curr_date, prev_date = process_data(df_ad, df_sales, selected_date)
 
-    # ===================== Display Table =====================
-    st.markdown("### 📄 Ad Performance Summary")
+    if final_df.empty:
+        st.warning(f"⚠️ No data match found for **{selected_date}**.")
+        return
+
+    # Formatted Dates for Headers
+    d1_label = prev_date.strftime('%B %d') 
+    curr_label = curr_date.strftime('%B %d') 
     
-    st.dataframe(
-        pivot,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "product_name": "Product",
-            f"estimated_budget_consumed_{latest_label}": st.column_config.NumberColumn(f"Ads Spend ({latest_label})", format="₹%.0f"),
-            f"gross_sales_{latest_label}": st.column_config.NumberColumn(f"Gross Sales ({latest_label})", format="₹%.0f"),
-            "Gross_Sales_Growth_%": st.column_config.NumberColumn("Sales Growth", format="%.2f%%"),
-            "Ad_Spend_Growth_%": st.column_config.NumberColumn("Spend Growth", format="%.2f%%"),
+    st.info(f"📊 Showing comparison: **{curr_label}** (Selected) vs **{d1_label}** (Previous Day)")
+
+    # -----------------------------------------------------
+    # 🏗️ BUILD MULTI-INDEX HEADER DATAFRAME
+    # -----------------------------------------------------
+    
+    cols_ordered = [
+        'D1_Ad_Spend', 'D1_Ad_Sales', 'D1_Gross_Sales', 'D1_Direct_ROAS', 'D1_ROAS',
+        'Curr_Ad_Spend', 'Curr_Ad_Sales', 'Curr_Gross_Sales', 'Curr_Direct_ROAS', 'Curr_ROAS',
+        'Growth_Gross_Sales', 'Growth_Ad_Spend'
+    ]
+    
+    display_df = final_df[cols_ordered].copy()
+    
+    arrays = [
+        [d1_label]*5 + [curr_label]*5 + ['Growth %']*2,
+        ['Ad Spend', 'Ad Sales', 'Gross Sales', 'Direct ROAS', 'ROAS', 
+         'Ad Spend', 'Ad Sales', 'Gross Sales', 'Direct ROAS', 'ROAS',
+         'Gross Sales', 'Ad Spend']
+    ]
+    display_df.columns = pd.MultiIndex.from_arrays(arrays)
+
+    # -----------------------------------------------------
+    # 💅 STYLING
+    # -----------------------------------------------------
+    
+    money_subset = [
+        (d1_label, 'Ad Spend'), (d1_label, 'Ad Sales'), (d1_label, 'Gross Sales'),
+        (curr_label, 'Ad Spend'), (curr_label, 'Ad Sales'), (curr_label, 'Gross Sales')
+    ]
+    
+    float_subset = [
+        (d1_label, 'Direct ROAS'), (d1_label, 'ROAS'),
+        (curr_label, 'Direct ROAS'), (curr_label, 'ROAS')
+    ]
+    
+    growth_subset = [
+        ('Growth %', 'Gross Sales'), ('Growth %', 'Ad Spend')
+    ]
+
+    styler = display_df.style\
+        .format("{:,.0f}", subset=money_subset)\
+        .format("{:,.2f}", subset=float_subset)\
+        .format("{:,.2f}%", subset=growth_subset)\
+        .applymap(color_growth, subset=growth_subset)\
+        .set_table_attributes('class="ad-table"')
+
+    # -----------------------------------------------------
+    # 🖌️ CUSTOM CSS (Light Theme)
+    # -----------------------------------------------------
+    css = textwrap.dedent("""
+    <style>
+        .ad-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: sans-serif;
+            font-size: 13px;
+            color: #000;
         }
-    )
+        .ad-table th, .ad-table td {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: right; 
+        }
+        .ad-table thead tr:nth-child(1) th {
+            background-color: #ffffff;
+            color: #000;
+            text-align: center;
+            font-weight: bold;
+            font-size: 14px;
+            border-bottom: 2px solid #000;
+        }
+        .ad-table thead tr:nth-child(2) th {
+            background-color: #f8f9fa;
+            color: #333;
+            text-align: center;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .ad-table tbody tr {
+            background-color: #ffffff !important;
+            color: #000 !important;
+        }
+        .ad-table tbody tr th {
+            text-align: left;
+            background-color: #ffffff;
+            font-weight: bold;
+            color: #000;
+            border-right: 2px solid #ccc;
+        }
+        .ad-table tbody tr:last-child {
+            font-weight: bold;
+            background-color: #f1f1f1 !important;
+            border-top: 2px solid #000;
+        }
+        .ad-table td, .ad-table th {
+            color: inherit;
+        }
+    </style>cvslnvfsnvm, blfsh
+    """)
+
+    st.markdown(css, unsafe_allow_html=True)
+    st.markdown(styler.to_html(), unsafe_allow_html=True)

@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import timedelta
 from sqlalchemy import text
+import textwrap
 
 # Import Centralized Engine
 try:
@@ -179,6 +180,20 @@ def page():
 
     final_df = pd.concat(subtotal_rows, ignore_index=True)
 
+    # ---------------------------------------------------------
+    # 🧹 CLEANUP: Show Product Name Only Once per Group
+    # ---------------------------------------------------------
+    # Ensure it is string type
+    final_df['product'] = final_df['product'].astype(str)
+    
+    # Create mask: True if current product name is same as previous AND not "All Cities Total"
+    # Note: "All Cities Total" is in 'feeder_wh' column, but we check product grouping here.
+    # We want the product name to show on the first row of the group.
+    
+    # Logic: If 'product' matches previous row's 'product', replace with empty string.
+    mask = final_df['product'] == final_df['product'].shift()
+    final_df.loc[mask, 'product'] = ''
+
     # 9. Clean Numeric Types
     for col in final_df.columns:
         if "quantity" in col:
@@ -214,21 +229,78 @@ def page():
 
     final_df.columns = pd.MultiIndex.from_tuples(new_cols)
 
-    # ================= 🎨 STYLING =================
+    # ================= 🎨 STYLING (High Contrast Dark Theme) =================
     
-    def highlight_totals(row):
-        """Highlights rows where the 'City / Warehouse' column contains 'Total'."""
-        city_val = str(row[('City / Warehouse', '')])
-        if "Total" in city_val:
-            return ['background-color: #ffffcc; font-weight: bold; color: #333333'] * len(row)
+    def apply_styles(row):
+        wh_val = str(row[('City / Warehouse', '')])
+        
+        # 1. Total Rows: Medium Blue-Grey with Black Text (Matches City Report)
+        if "Total" in wh_val:
+            return ['background-color: #B0BEC5; color: #000000; font-weight: bold; border-top: 1px solid #78909C;'] * len(row)
+        
+        # 2. Normal Row: White
         else:
-            return [''] * len(row)
+            return ['background-color: #ffffff; color: #000;'] * len(row)
 
-    # ⬇️ ADDED .format(precision=1) HERE to limit decimals to 1 place
-    styled_df = final_df.style.format(precision=1).apply(highlight_totals, axis=1)
+    styler = final_df.style.apply(apply_styles, axis=1)
+    
+    # Format Numbers
+    styler.format(precision=0, na_rep="0")
+    
+    # Add CSS Class
+    styler.set_table_attributes('class="static-table"')
 
-    # ⬇️ USING st.table (No sorting, Static View)
-    st.table(styled_df)
+    # CSS for Professional Table (Identical to City Report)
+    css = textwrap.dedent("""
+    <style>
+        .table-container {
+            max_height: 650px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+        }
+        .static-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: sans-serif;
+            font-size: 13px;
+        }
+        /* HEADER 1 */
+        .static-table thead tr:nth-child(1) th {
+            position: sticky;
+            top: 0;
+            background-color: #f8f9fa;
+            color: #000;
+            font-weight: bold;
+            padding: 10px;
+            text-align: center;
+            border: 1px solid #ccc;
+            z-index: 2;
+        }
+        /* HEADER 2 */
+        .static-table thead tr:nth-child(2) th {
+            position: sticky;
+            top: 40px;
+            background-color: #e9ecef;
+            color: #333;
+            font-size: 12px;
+            padding: 6px;
+            border: 1px solid #ccc;
+            z-index: 2;
+        }
+        .static-table td {
+            padding: 8px;
+            border: 1px solid #eee;
+            text-align: right;
+            color: #000;
+        }
+        .static-table td:nth-child(1), .static-table td:nth-child(2) {
+            text-align: left;
+        }
+    </style>
+    """)
+    
+    st.markdown(css, unsafe_allow_html=True)
+    st.markdown(f'<div class="table-container">{styler.to_html()}</div>', unsafe_allow_html=True)
 
     # ---------------------------------------------------------
     # 📊 CHARTS SECTION
@@ -257,5 +329,6 @@ def page():
         hover_data=['net_revenue']
     )
     fig.update_traces(text=daily_trend['quantity'], textposition='outside')
+    fig.update_layout(height=450, xaxis_title="Date", yaxis_title="Units Sold", bargap=0.2)
     
     st.plotly_chart(fig, use_container_width=True)
