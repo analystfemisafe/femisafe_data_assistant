@@ -7,139 +7,230 @@ from sqlalchemy import text
 try:
     from utils.db_manager import get_db_engine
 except ImportError:
+    # Fallback if utils folder missing
     from sqlalchemy import create_engine
     import os
     @st.cache_resource
-    def get_db_engine(): return create_engine(os.environ.get("DATABASE_URL"))
+    def get_db_engine():
+        return create_engine(os.environ.get("DATABASE_URL"))
 
 # ---------------------------------------------------------
-# 🛠️ HELPER: MANUAL ROW PARSING
-# ---------------------------------------------------------
-def clean_flipkart_df(df):
-    if df.empty: return df
-
-    # 1. Normalize Headers
-    df.columns = df.columns.str.strip().str.lower()
-    
-    # 2. Rename Columns
-    rename_map = {
-        "order date": "date", "date": "date",
-        "gmv": "gross_revenue", "gross_revenue": "gross_revenue",
-        "net revenue": "net_revenue", "net_revenue": "net_revenue",
-        "final sale units": "units_sold", "units_sold": "units_sold",
-        "sku id": "sku", "sku": "sku",
-        "product ": "product", "product": "product"
-    }
-    df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns}, inplace=True)
-
-    # 3. Numeric Cleaning
-    for col in ['net_revenue', 'units_sold']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(
-                df[col].astype(str).str.replace(r'[₹,]', '', regex=True), 
-                errors='coerce'
-            ).fillna(0)
-        else:
-            df[col] = 0 
-
-    df['units_sold'] = df['units_sold'].astype('int32')
-
-    # 4. Date Parsing
-    if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
-        df.dropna(subset=['date'], inplace=True)
-    
-    return df
-
-# ---------------------------------------------------------
-# 🚀 NUCLEAR-PROOF LOADER (Raw Fetch)
+# 🚀 OPTIMIZED DATA LOADER (Last 365 Days Only)
 # ---------------------------------------------------------
 @st.cache_data(ttl=900)
 def get_flipkart_data():
     engine = get_db_engine()
-    if not engine: return pd.DataFrame()
+    if not engine:
+        return pd.DataFrame()
 
     try:
         with engine.connect() as conn:
-            # Clear previous errors
-            try: conn.rollback()
-            except: pass
+            # ⚡ SQL OPTIMIZATION: Added WHERE clause to prevent timeouts
+            # Uses quotes "" because Flipkart columns have spaces (e.g., "order date")
+            query = text("""
+                SELECT 
+                    "order date" as date, 
+                    "net revenue" as net_revenue, 
+                    "final sale units" as units_sold,
+                    "product " as product
+                FROM femisafe_flipkart_salesdata
+                WHERE "order date" >= CURRENT_DATE - INTERVAL '365 days'
+            """)
+            df = pd.read_sql(query, conn)
+        
+        if df.empty: return df
+        
+        # =========================================================
+        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
+        # =========================================================
+        
+        # 1. Fast Vectorized Cleaning
+        if 'net_revenue' in df.columns:
+            df['net_revenue'] = pd.to_numeric(
+                df['net_revenue'].astype(str).str.replace(r'[₹,]', '', regex=True),
+                errors='coerce'
+            ).fillna(0)
+            
+        if 'units_sold' in df.columns:
+            df['units_sold'] = pd.to_numeric(
+                df['units_sold'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            ).fillna(0).astype('int32')
 
-            # 1. RAW EXECUTION (Bypasses Pandas crash)
-            result = conn.execute(text('SELECT * FROM femisafe_flipkart_salesdata'))
-            
-            # 2. MANUALLY FIX DUPLICATE HEADERS
-            raw_keys = list(result.keys()) # e.g. ['Date', 'date', 'SKU']
-            clean_keys = []
-            seen = set()
-            
-            for key in raw_keys:
-                key_clean = str(key).strip()
-                if key_clean in seen:
-                    # Rename duplicate: 'date' -> 'date_2'
-                    clean_keys.append(f"{key_clean}_{len(seen)}")
-                else:
-                    clean_keys.append(key_clean)
-                    seen.add(key_clean)
-            
-            # 3. BUILD DATAFRAME MANUALLY
-            data = result.fetchall()
-            df = pd.DataFrame(data, columns=clean_keys)
-            
-            # 4. CLEAN
-            clean_df = clean_flipkart_df(df)
-            
-            # Filter Last 365 Days
-            if not clean_df.empty and 'date' in clean_df.columns:
-                last_year = pd.Timestamp.now() - pd.Timedelta(days=365)
-                clean_df = clean_df[clean_df['date'] >= last_year]
-                
-            return clean_df
+        # 2. Fast Date Parsing
+        df['date'] = pd.to_datetime(df['date'], dayfirst=True, errors='coerce')
+        df.dropna(subset=['date'], inplace=True)
+        
+        # 3. Optimize Text to Category
+        df['product'] = df['product'].fillna("Unknown").astype(str).str.strip().astype('category')
+        
+        # 4. Create Month Column
+        df['month'] = df['date'].dt.strftime('%B').astype('category')
+
+        return df
 
     except Exception as e:
-        st.error(f"⚠️ Data Error: {e}")
+        st.error(f"⚠️ Data Load Error: {e}")
         return pd.DataFrame()
 
 # ===========================================================
 # PAGE
 # ===========================================================
 def page():
-    st.title("🛍️ Flipkart Sales Dashboard")
 
-    if st.button("🔄 Force Refresh Data"):
-        st.cache_data.clear()
-        st.rerun()
+    st.title("🛍️ Flipkart Sales Dashboard (Optimized)")
 
+    # Load Data (Instant if cached)
     df_fk = get_flipkart_data()
 
     if df_fk.empty:
-        st.warning("No Flipkart data available.")
+        st.warning("No Flipkart data available (or connection timed out).")
         return
 
-    # KPIs
+    # ===================== KPIs =====================
     total_revenue = df_fk['net_revenue'].sum()
     total_units = df_fk['units_sold'].sum()
+
     latest_date = df_fk['date'].max()
-    latest_month = latest_date.strftime('%B') if not pd.isnull(latest_date) else "Unknown"
     
-    latest_data = df_fk[df_fk['month'] == latest_month] if 'month' in df_fk.columns else pd.DataFrame()
-    latest_rev_val = latest_data['net_revenue'].sum() if not latest_data.empty else 0
+    # Check if we have valid dates
+    if pd.isnull(latest_date):
+        latest_month = "Unknown"
+        latest_revenue = 0
+        latest_units = 0
+    else:
+        latest_month = latest_date.strftime('%B')
+        # Fast boolean indexing
+        latest_data = df_fk[df_fk['month'] == latest_month]
+        latest_revenue = latest_data['net_revenue'].sum()
+        latest_units = latest_data['units_sold'].sum()
 
-    # Cards
+    # ===================== Card Styling =====================
+    card_style = """
+        background-color: #3a3a3a;
+        color: white;
+        padding: 25px 10px;
+        border-radius: 10px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        width: 100%;
+    """
+    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
+    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
+    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
+
     col1, col2 = st.columns(2)
-    col1.metric("Latest Month Revenue", f"₹{latest_rev_val:,.0f}", latest_month)
-    col2.metric("Total Units (Year)", f"{int(total_units):,}")
+    with col1:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">₹{latest_revenue:,.0f}</p>
+            <p style="{units_style}">{int(latest_units):,} units</p>
+            <p style="{label_style}">{latest_month} Revenue</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Chart
-    df_daily = df_fk.groupby('date', as_index=False)[['net_revenue', 'units_sold']].sum()
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_daily['date'], y=df_daily['net_revenue'], name='Revenue', line=dict(color='#2874f0')))
-    fig.add_trace(go.Scatter(x=df_daily['date'], y=df_daily['units_sold'], name='Units', line=dict(color='#ff9f00'), yaxis='y2'))
-    
-    fig.update_layout(
-        title="Sales Trend", 
-        yaxis2=dict(overlaying='y', side='right', showgrid=False),
-        template="plotly_dark"
+    with col2:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <p style="{number_style}">{int(total_units):,}</p>
+            <p style="{units_style}">units</p>
+            <p style="{label_style}">Total Units Sold (Last 365 Days)</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ===================== Product Filter =====================
+
+    product_list = sorted(list(df_fk['product'].unique()))
+
+    selected_product = st.selectbox(
+        "Filter by Product",
+        options=["All Products"] + product_list,
+        index=0
     )
+
+    # Apply filter
+    if selected_product != "All Products":
+        df_fk = df_fk[df_fk['product'] == selected_product]
+
+    # ===================== Chart Section =====================
+
+    if df_fk.empty:
+        st.warning("No data for this selection.")
+        return
+
+    # Filter last 30 days based on the MAX date in the data
+    max_date = df_fk['date'].max()
+    
+    if pd.isnull(max_date):
+        st.warning("Date data is missing or invalid.")
+        return
+
+    start_date = max_date - pd.Timedelta(days=30)
+    df_30 = df_fk[df_fk['date'] >= start_date]
+
+    # observed=True speeds up groupby on categories
+    df_daily = df_30.groupby('date', observed=True, as_index=False).agg({
+        'net_revenue': 'sum',
+        'units_sold': 'sum'
+    })
+
+    fig = go.Figure()
+
+    # REVENUE LINE (Flipkart Blue)
+    fig.add_trace(go.Scatter(
+        x=df_daily['date'],
+        y=df_daily['net_revenue'],
+        mode='lines+markers',
+        name='Revenue (INR)',
+        line=dict(color='#2874f0', width=3, shape='spline'), # Flipkart Blue
+        hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'
+    ))
+
+    # UNITS LINE (Orange)
+    fig.add_trace(go.Scatter(
+        x=df_daily['date'],
+        y=df_daily['units_sold'],
+        mode='lines+markers',
+        name='Units Sold',
+        line=dict(color='#ff9f00', width=3, shape='spline'), # Flipkart Orange
+        yaxis='y2',
+        hovertemplate='Units: %{y:,} units<extra></extra>'
+    ))
+
+    fig.update_layout(
+        title=dict(text="📈 Flipkart Sales (Last 30 Days)", font=dict(color="black", size=18)),
+        xaxis=dict(
+            title="Date",
+            tickfont=dict(color="black"),
+            showgrid=True,
+            gridcolor="rgba(200, 200, 200, 0.3)",
+        ),
+        yaxis=dict(
+            title=dict(text="Net Sales (INR)", font=dict(color="#2874f0")),
+            tickfont=dict(color="#2874f0"),
+            showgrid=True,
+            gridcolor="rgba(200, 200, 200, 0.3)",
+        ),
+        yaxis2=dict(
+            title=dict(text="No. of Units Sold", font=dict(color="#ff9f00")),
+            tickfont=dict(color="#ff9f00"),
+            overlaying="y",
+            side="right",
+            showgrid=False
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.25,
+            xanchor="center",
+            x=0.5
+        ),
+        template="plotly_white",
+        hovermode='x unified',
+        height=400,
+        margin=dict(l=50, r=50, t=50, b=50),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+
     st.plotly_chart(fig, use_container_width=True)

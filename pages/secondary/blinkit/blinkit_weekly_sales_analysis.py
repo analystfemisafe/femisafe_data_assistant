@@ -103,7 +103,7 @@ def page():
         warehouse = st.selectbox("Select Warehouse", ["All"] + wh_options)
     
     with col3:
-        week_limit = st.selectbox("Weeks to Compare", [2, 3, 4, 5, 6], index=2)
+        week_limit = st.selectbox("Weeks to Compare", [2, 3, 4, 5, 6, 8], index=2)
 
     # --- APPLY FILTERS ---
     # Filtering on categories is extremely fast

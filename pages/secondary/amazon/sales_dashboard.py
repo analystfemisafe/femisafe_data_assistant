@@ -229,7 +229,7 @@ def page():
         height=400,
         margin=dict(l=50, r=50, t=50, b=50),
         plot_bgcolor="white",
-        paper_bgcolor="white",
+        paper_bgcolor="white"
     )
 
     st.plotly_chart(fig, use_container_width=True)
