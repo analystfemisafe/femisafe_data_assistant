@@ -4,42 +4,65 @@ from sqlalchemy import text, inspect
 import os
 import io
 import time
+import datetime
+import extra_streamlit_components as stx  # 👈 IMPORT COOKIE MANAGER
 
 # ------------------------------------------------------
 # 1. PAGE SETUP (Must be the first Streamlit command)
 # ------------------------------------------------------
 st.set_page_config(page_title="FemiSafe Analytics", layout="wide", page_icon="📊")
 
+# Initialize Cookie Manager (Bug Fixed: removed experimental_allow_widgets)
+cookie_manager = stx.CookieManager(key="cookie_manager")
+
 # =======================================================
-# 🔐 GLOBAL LOGIN SYSTEM (The Gatekeeper)
+# 🔐 GLOBAL LOGIN SYSTEM (With 1-Day Cookie)
 # =======================================================
 def check_password():
-    """Returns `True` if the user had a correct password."""
+    """Returns `True` if the user is authenticated via session or cookie."""
 
+    # 🛑 THE FIX: If they just clicked logout, ignore everything else
+    if st.session_state.get("logout_triggered", False):
+        return False
+
+    # 1. CHECK BROWSER COOKIE FIRST
+    auth_cookie = cookie_manager.get(cookie="femisafe_auth")
+    if auth_cookie == "authenticated":
+        st.session_state["password_correct"] = True
+        return True
+
+    # 2. CHECK SESSION STATE (Fallback)
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # 3. HANDLE LOGIN ATTEMPT
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        # 1. GET CREDENTIALS (from secrets.toml OR fallback)
         if "passwords" in st.secrets:
             known_users = st.secrets["passwords"]
         else:
-            # Fallback for immediate use if secrets.toml is missing
-            known_users = {"admin": "femisafe2026"} 
+            st.error("🔒 Critical Error: Secure passwords missing from server.")
+            st.stop() 
 
         user_input = st.session_state["username"]
         pass_input = st.session_state["password"]
 
         if user_input in known_users and known_users[user_input] == pass_input:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Clean up
+            
+            # 🛑 THE FIX: Reset the logout flag so they can log back in
+            st.session_state["logout_triggered"] = False 
+            
+            # 🍪 SET COOKIE FOR 1 DAY
+            expire_date = datetime.datetime.now() + datetime.timedelta(days=1)
+            cookie_manager.set("femisafe_auth", "authenticated", expires_at=expire_date)
+            
+            del st.session_state["password"] 
             del st.session_state["username"]
         else:
             st.session_state["password_correct"] = False
 
-    # 2. IF ALREADY LOGGED IN, RETURN TRUE
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # 3. SHOW LOGIN FORM
+    # 4. SHOW LOGIN FORM
     st.markdown(
         """
         <style>
@@ -88,25 +111,20 @@ except ImportError:
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("Navigation Mode")
-    
-    # --- LOGOUT BUTTON ---
-    if st.button("🚪 Logout", use_container_width=True):
-        st.session_state["password_correct"] = False
-        st.rerun()
-    st.markdown("---")
-    # ---------------------
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Primary", use_container_width=True): st.session_state.nav_mode = "Primary"
     with col2:
         if st.button("Secondary", use_container_width=True): st.session_state.nav_mode = "Secondary"
+    
     st.markdown("---")
+    
     if st.button("📉 T-1 Summary", use_container_width=True): st.session_state.nav_mode = "T-1"
     if st.button("🤖 Data Assistant", use_container_width=True): st.session_state.nav_mode = "Data Assistant"
     if st.button("⚙️ Admin Panel", use_container_width=True): st.session_state.nav_mode = "Admin Panel"
 
-mode = st.session_state.nav_mode 
+mode = st.session_state.nav_mode
 
 # ------------------------------------------------------
 # 4. PAGE ROUTING
@@ -114,8 +132,16 @@ mode = st.session_state.nav_mode
 if mode == "Primary":
     st.sidebar.subheader("Primary Dashboards")
     primary_choice = st.sidebar.selectbox("Choose Report",
-        ["Overall Sales Overview", "Statewise Trends", "Product Performance", 
-         "Special Primary Charts", "Target 3 Months", "Dynamic Table"])
+        [
+            "Overall Sales Overview", 
+            "Statewise Trends", 
+            "Product Performance", 
+            "Special Primary Charts", 
+            "Target 3 Months", 
+            "Dynamic Table",
+            "Dynamic Chart"
+        ]
+    )
 
     if primary_choice == "Overall Sales Overview": from pages.primary.overall_sales_overview import page; page()
     elif primary_choice == "Statewise Trends": from pages.primary.statewise_sku_trends import page; page()
@@ -123,9 +149,10 @@ if mode == "Primary":
     elif primary_choice == "Special Primary Charts": from pages.primary.special_primary_charts import page; page()
     elif primary_choice == "Target 3 Months": from pages.primary.target_3_months import page; page()
     elif primary_choice == "Dynamic Table": from pages.primary.dynamic_table import page; page()
+    elif primary_choice == "Dynamic Chart": from pages.primary.dynamic_chart import page; page()
 
 # ------------------------------------------------------
-# 📉 T-1 SUMMARY (UPDATED LINKS)
+# 📉 T-1 SUMMARY
 # ------------------------------------------------------
 elif mode == "T-1":
     st.sidebar.subheader("T-1 Analysis")
@@ -138,14 +165,10 @@ elif mode == "T-1":
             from pages.t1.reports.drr import show_drr; show_drr()
             
         elif t1_report == "Blinkit Product-wise": 
-            # 👇 LINKED TO SECONDARY PAGE
-            from pages.secondary.blinkit.blinkit_productwise_performance import page
-            page()
+            from pages.secondary.blinkit.blinkit_productwise_performance import page; page()
             
         elif t1_report == "Blinkit City-wise": 
-            # 👇 LINKED TO SECONDARY PAGE
-            from pages.secondary.blinkit.blinkit_citywise_performance import page
-            page()
+            from pages.secondary.blinkit.blinkit_citywise_performance import page; page()
             
     elif t1_channel == "Ads Performance":
         t1_report = st.sidebar.selectbox("Choose Report", ["Ad Overview", "Campaign Analysis"])
@@ -210,7 +233,6 @@ elif mode == "Admin Panel":
     st.title("🔐 Admin Security Check")
     
     # 1. DEFINE YOUR PASSWORD HERE
-    # You can change "1234" to anything you want
     ADMIN_PASSWORD = os.environ.get("ADMIN_PASS", "femisafe2026") 
     
     # 2. CHECK LOGIN STATUS
@@ -284,6 +306,9 @@ elif mode == "Admin Panel":
                         else:
                             df = pd.read_excel(uploaded_file)
                         
+                        # ⚡ FIX: Remove accidental spaces from header names (Fixes "month " error)
+                        df.columns = df.columns.str.strip()
+
                         df = df.loc[:, ~df.columns.duplicated()] # Init Dedupe
                         
                         clean_table_name = selected_table.lower()
@@ -352,8 +377,10 @@ elif mode == "Admin Panel":
 
                         # ⚠️ FINAL PREP
                         df = df.loc[:, ~df.columns.duplicated()]
+                        
                         for col in df.columns:
-                            if "date" in str(col).lower(): df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
+                            # 🛠️ DATE FIX: Removed 'dayfirst=True' so YYYY-MM-DD is read correctly
+                            if "date" in str(col).lower(): df[col] = pd.to_datetime(df[col], errors='coerce')
 
                         st.write(f"✅ Ready to upload {len(df)} rows. Columns: {list(df.columns)}")
                         
@@ -477,3 +504,18 @@ elif mode == "Admin Panel":
                                 conn.commit()
                                 st.success("✅ Fixed!")
                             except Exception as e: st.error(f"Error (likely already fixed): {e}")
+
+# =======================================================
+# 🚪 LOGOUT BUTTON (Rendered absolutely last in the sidebar)
+# =======================================================
+with st.sidebar:
+    st.markdown('<div style="margin-top: 40vh;"></div>', unsafe_allow_html=True)
+    st.markdown("---")
+    
+    if st.button("🚪 Logout"):
+        # 🛑 THE FIX: Set the flag so the app ignores the cookie while deleting
+        st.session_state["logout_triggered"] = True
+        st.session_state["password_correct"] = False
+        cookie_manager.delete("femisafe_auth") 
+        time.sleep(0.5) 
+        st.rerun()

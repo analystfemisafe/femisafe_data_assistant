@@ -79,9 +79,9 @@ def load_data():
 # ======================================
 def page():
 
-    st.title("📊 Dynamic Table Maker (Optimized)")
+    st.title("📊 Dynamic Table Maker")
 
-    # Load Data (Instant if cached)
+    # Load Data
     df = load_data()
 
     if df.empty:
@@ -91,80 +91,103 @@ def page():
     # ==============================
     # 🔍 FILTER SECTION
     # ==============================
-    st.header("🔍 Filters")
+    with st.expander("🔍 Filters", expanded=True):
+        # Define filter columns
+        possible_cols = ['month', 'channels', 'distributor', 'fulfilment_type', 'state', 'city', 'products']
+        filter_cols = [col for col in possible_cols if col in df.columns]
 
-    # Define filter columns (Check if they exist in DF first)
-    possible_cols = ['month', 'channels', 'distributor', 'fulfilment_type', 'state', 'city', 'products']
-    filter_cols = [col for col in possible_cols if col in df.columns]
-
-    filter_selection = {}
-    cols = st.columns(3)
-
-    for i, column in enumerate(filter_cols):
-        with cols[i % 3]:
-            # Optimize: sorting unique values from Categories is extremely fast
-            unique_vals = sorted(list(df[column].unique()))
-            # Convert to string for display in multiselect (Categories might need this)
-            unique_vals_str = [str(x) for x in unique_vals]
-            
-            choice = st.multiselect(f"Filter by {column.title()}", unique_vals_str)
-            filter_selection[column] = choice
+        filters = {}
+        cols = st.columns(3)
+        for i, col in enumerate(filter_cols):
+            with cols[i % 3]:
+                unique_vals = sorted([str(x) for x in df[col].unique()])
+                selected = st.multiselect(f"{col.title()}", unique_vals, key=f"filter_{col}")
+                if selected:
+                    filters[col] = selected
 
     # Apply filters
-    # Filtering on Category types is faster
     filtered_df = df.copy()
+    for col, vals in filters.items():
+        filtered_df = filtered_df[filtered_df[col].astype(str).isin(vals)]
+
+    # ==============================
+    # 📌 CONFIGURATION SECTION
+    # ==============================
+    st.subheader("⚙️ Table Configuration")
     
-    for column, selected_vals in filter_selection.items():
-        if selected_vals:
-            # We filter using .isin() which works great on categories
-            filtered_df = filtered_df[filtered_df[column].isin(selected_vals)]
-
-    # ==============================
-    # 📌 ROWS SELECTION (GROUP BY)
-    # ==============================
-    st.header("📌 Select Row Dimensions (Group By)")
-
-    possible_row_dims = ['order_date', 'month', 'channels', 'distributor', 'fulfilment_type',
-                    'categories', 'products', 'sku', 'state', 'city', 'pincode']
+    col1, col2, col3 = st.columns(3)
     
-    # Only show columns that actually exist in the database
-    all_columns = [col for col in possible_row_dims if col in df.columns]
+    with col1:
+        # Row Dimensions
+        possible_rows = ['order_date', 'month', 'channels', 'distributor', 'fulfilment_type', 'categories', 'products', 'sku', 'state', 'city']
+        avail_rows = [c for c in possible_rows if c in df.columns]
+        row_dims = st.multiselect("Group By (Rows)", avail_rows, default=['month'])
 
-    # Add caching logic or session state if needed to remember choices, 
-    # but for simple optimization, this is fine.
-    row_dims = st.multiselect("Choose rows (grouping columns):", all_columns)
+    with col2:
+        # Value Columns
+        possible_vals = ["sku_units", "revenue"]
+        avail_vals = [c for c in possible_vals if c in df.columns]
+        selected_values = st.multiselect("Values to Aggregate", avail_vals, default=avail_vals)
 
-    # ==============================
-    # 📦 VALUE COLUMNS + AGGREGATION
-    # ==============================
-    st.header("📦 Select Value Columns")
-
-    possible_values = ["sku_units", "revenue"]
-    value_columns = [col for col in possible_values if col in df.columns]
-
-    selected_values = st.multiselect("Choose values to aggregate:", value_columns)
-
-    agg_types = ["sum", "mean", "max", "min"]
-
-    agg_choice = st.selectbox("Choose aggregation type:", agg_types)
+    with col3:
+        # Aggregation Type
+        agg_choice = st.selectbox("Aggregation Type", ["sum", "mean", "max", "min"])
+        # 👇 NEW: Grand Total Checkbox
+        show_total = st.checkbox("Show Grand Total Row", value=True)
 
     # ==============================
     # 🚀 GENERATE TABLE
     # ==============================
-    st.header("📊 Output Table")
-
-    if len(row_dims) == 0 or len(selected_values) == 0:
-        st.warning("Select at least one row and one value to generate the table.")
+    st.markdown("---")
+    
+    if not row_dims or not selected_values:
+        st.info("👆 Please select at least one **Group By** column and one **Value** column.")
         return
 
-    # Create aggregation dictionary
-    agg_dict = {value: agg_choice for value in selected_values}
+    # 1. Group & Aggregate
+    # observed=True makes it faster for categorical data
+    try:
+        pivot_table = filtered_df.groupby(row_dims, observed=False)[selected_values].agg(agg_choice).reset_index()
+    except TypeError:
+        st.error("Error aggregating data. Ensure selected values are numeric.")
+        return
 
-    # Create grouped table (observed=True speeds up groupby on categories)
-    pivot_table = filtered_df.groupby(row_dims, observed=True).agg(agg_dict).reset_index()
+    # 2. Add Grand Total (If requested)
+    if show_total and not pivot_table.empty:
+        # Calculate totals for the value columns
+        total_row = pd.DataFrame(columns=pivot_table.columns)
+        total_row.loc[0, row_dims[0]] = "GRAND TOTAL"  # Label first column
+        
+        for col in selected_values:
+            if agg_choice == "sum":
+                total_row.loc[0, col] = pivot_table[col].sum()
+            elif agg_choice == "mean":
+                total_row.loc[0, col] = pivot_table[col].mean()
+            elif agg_choice == "max":
+                total_row.loc[0, col] = pivot_table[col].max()
+            elif agg_choice == "min":
+                total_row.loc[0, col] = pivot_table[col].min()
 
-    st.dataframe(pivot_table, use_container_width=True)
+        # Append to the bottom
+        pivot_table = pd.concat([pivot_table, total_row], ignore_index=True)
 
+    # 3. Display
+    st.dataframe(
+        pivot_table.style.format({
+            'revenue': '₹{:,.0f}', 
+            'sku_units': '{:,.0f}'
+        }, na_rep="-"), 
+        use_container_width=True,
+        height=500
+    )
+
+    # 4. Download
+    st.download_button(
+        "⬇️ Download Table as CSV",
+        data=pivot_table.to_csv(index=False).encode("utf-8"),
+        file_name="dynamic_pivot_with_total.csv",
+        mime="text/csv"
+    )
     # ==============================
     # 📥 Excel Export
     # ==============================

@@ -7,7 +7,6 @@ from sqlalchemy import text
 try:
     from utils.db_manager import get_db_engine
 except ImportError:
-    # Fallback if utils folder missing
     from sqlalchemy import create_engine
     import os
     @st.cache_resource
@@ -17,7 +16,7 @@ except ImportError:
 # ---------------------------------------------------------
 # 🚀 OPTIMIZED DATA LOADER
 # ---------------------------------------------------------
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=3600)
 def get_overall_sales_data():
     engine = get_db_engine()
     if not engine:
@@ -25,47 +24,32 @@ def get_overall_sales_data():
 
     try:
         with engine.connect() as conn:
-            # ⚡ SQL OPTIMIZATION: Select only needed columns
-            # Note: We select specific columns to avoid 'SELECT *' overhead
-            query = text("SELECT revenue, sku_units, order_date, month FROM femisafe_sales")
+            # Fetch minimal data
+            query = text('SELECT revenue, sku_units, order_date FROM femisafe_sales')
             df = pd.read_sql(query, conn)
         
         if df.empty: return df
 
-        # =========================================================
-        # ⚡ PANDAS MEMORY & SPEED OPTIMIZATION
-        # =========================================================
-
-        # 1. Standardize Column Names
+        # Clean Column Names
         df.columns = df.columns.str.strip().str.lower()
         
-        # 2. Rename 'sku_units' to 'units' for consistency
+        # Standardize Metrics
         if 'sku_units' in df.columns:
             df.rename(columns={'sku_units': 'units'}, inplace=True)
         elif 'units' not in df.columns:
             df['units'] = 0
 
-        # 3. Fast Vectorized Cleaning (Revenue & Units)
-        # Regex removes ₹, commas, spaces instantly
-        if 'revenue' in df.columns:
-            df['revenue'] = pd.to_numeric(
-                df['revenue'].astype(str).str.replace(r'[₹,]', '', regex=True),
-                errors='coerce'
-            ).fillna(0)
+        # Clean Numerics
+        for col in ['revenue', 'units']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(
+                    df[col].astype(str).str.replace(r'[₹,]', '', regex=True),
+                    errors='coerce'
+                ).fillna(0)
 
-        if 'units' in df.columns:
-            df['units'] = pd.to_numeric(
-                df['units'].astype(str).str.replace(',', ''),
-                errors='coerce'
-            ).fillna(0).astype('int32')
-
-        # 4. Fast Date Parsing (dayfirst=True fixes date flipping)
+        # 🛠️ DATE FIX: Handle YYYY-MM-DD vs DD-MM-YYYY safely
         df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
         df.dropna(subset=['order_date'], inplace=True)
-
-        # 5. Optimize Text to Category
-        if 'month' in df.columns:
-            df['month'] = df['month'].astype(str).str.strip().astype('category')
 
         return df
 
@@ -78,159 +62,163 @@ def get_overall_sales_data():
 # ===========================================================
 def page():
 
-    st.title("📊 Overall Sales Overview (Optimized)")
+    st.title("📊 Overall Sales Overview")
 
-    # Load Data (Instant if cached)
+    # 1. Load Data
     df = get_overall_sales_data()
 
     if df.empty:
-        st.warning("No data available in 'femisafe_sales'.")
+        st.warning("No data available.")
         return
 
-    # ---------------------------------------------------------
-    # 2. PREPROCESS DATA
-    # ---------------------------------------------------------
-    # Total Metrics
-    total_revenue = df['revenue'].sum()
-    total_units = df['units'].sum()
-
-    # Latest Month Metrics
+    # 2. Latest Date Context
     latest_date = df['order_date'].max()
-    latest_year = latest_date.year
-    latest_month_num = latest_date.month
-    month_name = latest_date.strftime("%B")
-
-    # Fast filtering for latest month
-    latest_month_df = df[
-        (df['order_date'].dt.year == latest_year) &
-        (df['order_date'].dt.month == latest_month_num)
-    ]
-
-    latest_month_revenue = latest_month_df['revenue'].sum()
-    latest_month_units = latest_month_df['units'].sum()
-
-    # -----------------------------------------
-    # 3. CARD STYLES
-    # -----------------------------------------
-    card_style = """
-        background-color: #3a3a3a;
-        color: white;
-        padding: 25px 10px;
-        border-radius: 10px;
-        text-align: center;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        width: 100%;
-    """
-    number_style = "font-size: 2rem; font-weight: bold; margin: 0;"
-    label_style = "font-size: 0.9rem; margin-top: 4px; color: #e0e0e0; font-weight: 500;"
-    units_style = "font-size: 0.9rem; margin-top: 2px; color: #cfcfcf;"
-
-    col1, col2 = st.columns(2)
-
-    # CARD 1 → LATEST MONTH
-    with col1:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">₹{latest_month_revenue:,.0f}</p>
-            <p style="{units_style}">{int(latest_month_units):,} units</p>
-            <p style="{label_style}">{month_name} Revenue</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # CARD 2 → TOTAL
-    with col2:
-        st.markdown(f"""
-        <div style="{card_style}">
-            <p style="{number_style}">₹{total_revenue:,.0f}</p>
-            <p style="{units_style}">{int(total_units):,} units</p>
-            <p style="{label_style}">Total Revenue (All Months)</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # -----------------------------------------
-    # 4. CHART SECTION
-    # -----------------------------------------
+    latest_month_name = latest_date.strftime("%B")
     
-    # Filter Logic (April to Latest)
-    # Using .dt accessors is fast enough here
-    if latest_month_num >= 4:
-        df_chart = df[df['order_date'].dt.month.between(4, latest_month_num)]
-    else:
-        # If current month is Jan/Feb/Mar, show April-Dec of prev year + Jan-Current of this year
-        # Logic: Month is >= 4 OR Month is <= current month
-        df_chart = df[
-            (df['order_date'].dt.month >= 4) | 
-            (df['order_date'].dt.month <= latest_month_num)
-        ]
+    # ---------------------------------------------------------
+    # 3. METRIC CARDS (Current vs Previous Month)
+    # ---------------------------------------------------------
+    # Current Month
+    current_month_df = df[
+        (df['order_date'].dt.month == latest_date.month) & 
+        (df['order_date'].dt.year == latest_date.year)
+    ]
+    curr_rev = current_month_df['revenue'].sum()
+    curr_units = current_month_df['units'].sum()
 
-    # observed=True speeds up grouping on 'month' category
-    df_monthly = df_chart.groupby('month', observed=False, as_index=False).agg({
-        'revenue': 'sum',
+    # Previous Month
+    prev_date = latest_date - pd.DateOffset(months=1)
+    prev_month_df = df[
+        (df['order_date'].dt.month == prev_date.month) & 
+        (df['order_date'].dt.year == prev_date.year)
+    ]
+    prev_rev = prev_month_df['revenue'].sum()
+    prev_units = prev_month_df['units'].sum()
+    prev_month_name = prev_date.strftime("%B")
+
+    # Growth Calculation
+    if prev_rev > 0:
+        growth = ((curr_rev - prev_rev) / prev_rev) * 100
+        growth_str = f"{growth:+.1f}%"
+        growth_color = "#4caf50" if growth > 0 else "#ef5350"
+    else:
+        growth_str = "-"
+        growth_color = "#ccc"
+
+    # Display Cards
+    card_style = "background-color: #1e1e1e; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #333;"
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <h3 style="margin:0; color:#ccc; font-size:16px;">Current Month ({latest_month_name})</h3>
+            <h2 style="margin:5px 0; font-size: 28px;">₹{curr_rev:,.0f}</h2>
+            <p style="margin:0; color:#888;">{int(curr_units):,} units</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown(f"""
+        <div style="{card_style}">
+            <h3 style="margin:0; color:#ccc; font-size:16px;">Last Month ({prev_month_name})</h3>
+            <h2 style="margin:5px 0; font-size: 28px;">₹{prev_rev:,.0f}</h2>
+            <p style="margin:0; color:#888;">
+                {int(prev_units):,} units 
+                <span style="font-size: 14px; color:{growth_color}; margin-left: 10px;">
+                    ({growth_str})
+                </span>
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ---------------------------------------------------------
+    # 4. DYNAMIC CHART SECTION
+    # ---------------------------------------------------------
+    
+    # A. View Selection
+    view_mode = st.radio(
+        "📅 Select Time Range", 
+        ["Financial Year (Current)", "All Time (Lifetime)", "Quarterly View"], 
+        horizontal=True
+    )
+
+    # B. Filter & Grouping Logic
+    df_chart = df.copy()
+    chart_title = ""
+    x_label_col = 'label'
+
+    # Logic for Financial Year
+    if view_mode == "Financial Year (Current)":
+        if latest_date.month >= 4:
+            fy_start_year = latest_date.year
+        else:
+            fy_start_year = latest_date.year - 1
+        
+        start_date = pd.Timestamp(year=fy_start_year, month=4, day=1)
+        df_chart = df_chart[df_chart['order_date'] >= start_date]
+        
+        # Group by Month (YYYY-MM)
+        df_chart['sort_key'] = df_chart['order_date'].dt.to_period('M')
+        chart_title = f"Sales Trend (FY {fy_start_year}-{fy_start_year+1})"
+
+    # Logic for All Time
+    elif view_mode == "All Time (Lifetime)":
+        # No filter, just group by Month
+        df_chart['sort_key'] = df_chart['order_date'].dt.to_period('M')
+        chart_title = "Lifetime Sales Trend (All Months)"
+
+    # Logic for Quarterly View
+    elif view_mode == "Quarterly View":
+        # No filter, but group by Quarter (YYYY-Q)
+        df_chart['sort_key'] = df_chart['order_date'].dt.to_period('Q')
+        chart_title = "Quarterly Performance (Q1/Q2/Q3/Q4)"
+
+    # C. Aggregation
+    # We group by 'sort_key' to ensure correct chronological sorting
+    df_agg = df_chart.groupby('sort_key', as_index=False).agg({
+        'revenue': 'sum', 
         'units': 'sum'
     })
-
-    month_map = {
-        1:'January',2:'February',3:'March',4:'April',
-        5:'May',6:'June',7:'July',8:'August',
-        9:'September',10:'October',11:'November',12:'December'
-    }
-
-    # Define custom sort order for months
-    if latest_month_num >= 4:
-        month_order = [month_map[m] for m in range(4, latest_month_num + 1)]
+    
+    # Sort Chronologically (2025-01 comes before 2026-01)
+    df_agg = df_agg.sort_values('sort_key')
+    
+    # Create readable labels
+    if view_mode == "Quarterly View":
+        df_agg['label'] = df_agg['sort_key'].astype(str) # e.g., "2025Q1"
     else:
-        month_order = [month_map[m] for m in range(4, 13)] + [month_map[m] for m in range(1, latest_month_num + 1)]
+        df_agg['label'] = df_agg['sort_key'].dt.strftime('%b %Y') # e.g., "Jan 2025"
 
-    # Filter out months that might not exist in data yet to prevent empty categories
-    existing_months = set(df_monthly['month'].unique())
-    month_order = [m for m in month_order if m in existing_months]
-
-    df_monthly['month'] = pd.Categorical(
-        df_monthly['month'],
-        categories=month_order,
-        ordered=True
-    )
-    df_monthly = df_monthly.sort_values('month')
-
-    # SMOOTH LINE CHART
+    # D. Plotting
     fig = go.Figure()
-
-    # Revenue trace
+    
+    # Revenue Line
     fig.add_trace(go.Scatter(
-        x=df_monthly['month'],
-        y=df_monthly['revenue'],
-        mode='lines+markers',
-        name='Net Sales (INR)',
-        line=dict(color='purple', shape='spline'),
-        hovertemplate='Revenue: ₹%{y:,.0f}<extra></extra>'
+        x=df_agg['label'], y=df_agg['revenue'],
+        mode='lines+markers', name='Revenue',
+        line=dict(color='#ab47bc', width=3, shape='spline'),
+        hovertemplate='₹%{y:,.0f}<extra></extra>'
     ))
-
-    # Units trace
+    
+    # Units Line
     fig.add_trace(go.Scatter(
-        x=df_monthly['month'],
-        y=df_monthly['units'],
-        mode='lines+markers',
-        name='Units Sold',
-        line=dict(color='green', shape='spline'),
-        yaxis='y2',
-        hovertemplate='Units: %{y:.0f} units<extra></extra>'
+        x=df_agg['label'], y=df_agg['units'],
+        mode='lines+markers', name='Units',
+        yaxis='y2', line=dict(color='#66bb6a', width=3, shape='spline'),
+        hovertemplate='%{y} units<extra></extra>'
     ))
 
     fig.update_layout(
-        title=f"📈 Month-wise Sales Overview (Apr–{month_map[latest_month_num]})",
-        xaxis_title="Date",
-        yaxis_title="Revenue (₹)",
-        yaxis2=dict(
-            title="Units",
-            overlaying="y",
-            side="right"
-        ),
+        title=chart_title,
+        height=500,
         hovermode="x unified",
-        hoverlabel=dict(
-            bgcolor="black",
-            font_size=13,
-            font_color="white"
-        )
+        yaxis=dict(title="Revenue (₹)", showgrid=True, gridcolor='#333'),
+        yaxis2=dict(title="Units Sold", overlaying="y", side="right", showgrid=False),
+        legend=dict(orientation="h", y=1.1, x=0),
+        margin=dict(l=20, r=20, t=80, b=20)
     )
-
+    
     st.plotly_chart(fig, use_container_width=True)
