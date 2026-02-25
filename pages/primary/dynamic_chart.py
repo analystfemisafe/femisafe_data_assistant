@@ -186,8 +186,14 @@ def page():
     else:
         df_grouped = df_grouped.sort_values(y_axis, ascending=False)
 
-    # 3. Generate Chart
+   # 3. Generate Chart
     color_arg = color_col if color_col != 'None' else None
+    
+    # 🛑 THE FIX: Force Plotly to treat the X-Axis and Color columns as strict text categories. 
+    # This prevents it from treating years as math numbers and inventing decimals like 2024.5!
+    df_grouped[x_axis] = df_grouped[x_axis].astype(str)
+    if color_arg:
+        df_grouped[color_arg] = df_grouped[color_arg].astype(str)
     
     if chart_type == "Line Chart":
         fig = px.line(
