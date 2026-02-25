@@ -1,105 +1,202 @@
 import streamlit as st
 import pandas as pd
-from groq import Groq
+import plotly.express as px
+import json
+from google import genai
+import os
 from sqlalchemy import text
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Import Centralized Engine
 try:
     from utils.db_manager import get_db_engine
 except ImportError:
     from sqlalchemy import create_engine
-    import os
     @st.cache_resource
     def get_db_engine():
         return create_engine(os.environ.get("DATABASE_URL"))
 
-# ---------------------------------------------------------
-# 🧠 AI BRAIN (Powered by Groq/Llama 3)
-# ---------------------------------------------------------
-def get_ai_response(prompt):
-    """
-    Uses Groq (Llama 3) to generate SQL queries.
-    """
-    # 1. Check for API Key
-    if "general" not in st.secrets or "GROQ_API_KEY" not in st.secrets["general"]:
-        return "❌ Error: Missing GROQ_API_KEY in .streamlit/secrets.toml"
-
-    client = Groq(api_key=st.secrets["general"]["GROQ_API_KEY"])
-
-    # 2. Define System Instructions & Schema Context
-    schema_context = """
-    1. femisafe_sales (date, product, net_revenue, units_sold)
-    2. femisafe_amazon_salesdata (date, product, net_revenue, units_sold)
-    3. femisafe_amazon_addata (date, product, spend_inr, ad_sales)
-    4. femisafe_blinkit_salesdata (date, product, revenue)
-    """
-
-    system_prompt = f"""
-    You are a Postgres SQL Expert for a sales dashboard.
-    - Your job is to return ONLY a valid SQL query. 
-    - Database Schema: {schema_context}
-    
-    CRITICAL RULES FOR MATCHING DATA:
-    1. **Case Insensitivity:** Always use ILIKE instead of = for text. 
-       (Example: USE `product ILIKE '%cup%'` NOT `product = 'Cup'`)
-    2. **Dates:** The database uses dates in 'YYYY-MM-DD' format. Ensure you cast string dates if needed.
-    3. **Revenue:** If the column is TEXT, cast it: `CAST(REPLACE(net_revenue, ',', '') AS NUMERIC)`.
-    4. **Empty Results:** If a user asks for 'Amazon', check both 'Amazon' and 'amazon' (lowercase).
-    """
-
-    # 3. Call AI
+# ==========================================
+# 🛡️ AI CALL & DEBUG CATCHER
+# ==========================================
+def send_message_to_gemini(client, prompt):
     try:
-        completion = client.chat.completions.create(
-            model="llama3-70b-8192",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=500
+        # 🛑 FIX: Switched to the universally stable 2.0 model
+        return client.models.generate_content(
+            model='gemini-2.0-flash', 
+            contents=prompt
         )
-        return completion.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Error connecting to Groq: {e}"
+        # 🛑 FIX: If it fails, print the EXACT reason to the Streamlit screen
+        st.error(f"🔍 Detailed Google Error: {str(e)}")
+        raise e
+# ==========================================
+# 🚀 DATA LOADER
+# ==========================================
+@st.cache_data(ttl=3600)
+def get_assistant_data():
+    engine = get_db_engine()
+    if not engine: return None, "No database connection available."
+    
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT month, channels, products, revenue, sku_units FROM femisafe_sales")
+            df = pd.read_sql(query, conn)
+            
+        if df.empty: return None, "No data available in the table."
 
-# ---------------------------------------------------------
-# 🎨 PAGE UI (Required for the App to work)
-# ---------------------------------------------------------
+        df.columns = df.columns.str.strip().str.lower()
+
+        # Clean numbers
+        if 'revenue' in df.columns:
+            df['revenue'] = pd.to_numeric(df['revenue'].astype(str).str.replace(r'[₹,]', '', regex=True), errors='coerce').fillna(0)
+        if 'sku_units' in df.columns:
+            df['sku_units'] = pd.to_numeric(df['sku_units'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+            df.rename(columns={'sku_units': 'units'}, inplace=True)
+
+        # Aggregate data
+        group_cols = [col for col in ['month', 'channels', 'products'] if col in df.columns]
+        sum_cols = [col for col in ['revenue', 'units'] if col in df.columns]
+        
+        df_grouped = df.groupby(group_cols, as_index=False)[sum_cols].sum()
+        
+        if 'revenue' in df_grouped.columns:
+            df_grouped = df_grouped.sort_values(by='revenue', ascending=False)
+            
+        return df_grouped, df_grouped.to_csv(index=False)
+            
+    except Exception as e:
+        return None, f"Database error: {e}"
+
+# ==========================================
+# 🎨 CHART RENDERER
+# ==========================================
+def render_chart(df, chart_config, chart_key):
+    if df is None or df.empty:
+        st.warning("No data available to draw this chart.")
+        return
+
+    c_type = chart_config.get("chart_type", "bar")
+    x_axis = chart_config.get("x_axis", "channels")
+    y_axis = chart_config.get("y_axis", "revenue")
+    title = chart_config.get("title", f"{y_axis.title()} by {x_axis.title()}")
+
+    if x_axis not in df.columns or y_axis not in df.columns:
+        st.error(f"Cannot create chart: Missing columns '{x_axis}' or '{y_axis}'.")
+        return
+
+    if c_type == "line":
+        fig = px.line(df, x=x_axis, y=y_axis, title=title, markers=True, template="plotly_dark")
+    else:
+        fig = px.bar(df, x=x_axis, y=y_axis, title=title, color=x_axis, template="plotly_dark")
+        
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
+
+# ==========================================
+# 🤖 CHATBOT PAGE UI
+# ==========================================
 def page():
-    st.markdown("### 🤖 AI Data Assistant")
-    st.caption("⚡ Powered by Groq (Llama 3) - Super Fast & Free")
+    st.markdown("### ✨ FemiSafe AI Data Assistant")
+    st.caption("Powered by Gemini 2.5 Flash - Now with Visual Analytics!")
 
-    # 1. Input Box
-    user_query = st.text_input("Ask a question about your data:", placeholder="e.g., Total Amazon revenue last week?")
+    try:
+        api_key = st.secrets["general"]["GEMINI_API_KEY"]
+    except:
+        api_key = os.environ.get("GEMINI_API_KEY")
 
-    # 2. Process Query
-    if user_query:
-        with st.spinner("Thinking..."):
-            
-            # A. Get SQL from AI
-            sql_query = get_ai_response(user_query)
-            
-            # B. Check for Errors
-            if "Error" in sql_query or "⚠️" in sql_query:
-                st.error(sql_query)
-                return
+    if not api_key:
+        st.error("⚠️ Please add GEMINI_API_KEY to your settings.")
+        return
 
-            # C. Show the Logic (Optional)
-            with st.expander("See generated SQL (Debug)"):
-                st.code(sql_query, language="sql")
-            
-            # D. Run the Query
-            try:
-                engine = get_db_engine()
-                if engine:
-                    with engine.connect() as conn:
-                        # Use pandas to run the SQL
-                        df = pd.read_sql(text(sql_query), conn)
+    # Initialize Gemini Client
+    if "gemini_client" not in st.session_state:
+        st.session_state.gemini_client = genai.Client(api_key=api_key)
+        
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Load Data
+    df_grouped, data_context = get_assistant_data()
+
+    # Display Chat History
+    for i, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            if message["is_chart"]:
+                render_chart(df_grouped, message["content"], chart_key=f"chart_history_{i}")
+            else:
+                st.markdown(message["content"])
+
+    # Handle User Input
+    user_prompt = st.chat_input("Ask me for a chart! (e.g., Draw a bar chart of revenue by product)")
+    
+    if user_prompt:
+        st.chat_message("user").markdown(user_prompt)
+        st.session_state.messages.append({"role": "user", "content": user_prompt, "is_chart": False})
+
+        # Bundle up the chat history so the AI remembers the conversation
+        history_text = "\n".join([
+            f"{'User' if m['role']=='user' else 'AI'}: {m['content'] if not m['is_chart'] else '[Generated Chart]'}" 
+            for m in st.session_state.messages[-4:-1]  # Send the last 3 messages
+        ])
+
+        # The Indestructible Prompt
+        full_prompt = f"""
+        You are an expert Data Analyst for FemiSafe. 
+        
+        LATEST DATA:
+        {data_context}
+        
+        RECENT CHAT HISTORY:
+        {history_text}
+        
+        RULES:
+        1. If the user asks a normal question, answer using concise text.
+        2. IF the user asks to see a chart or graph, DO NOT write any text. You MUST reply ONLY with a raw JSON object matching this exact structure:
+        {{
+            "is_chart": true,
+            "chart_type": "bar", 
+            "x_axis": "month",
+            "y_axis": "revenue",
+            "title": "Revenue by Month"
+        }}
+        Valid chart_type options: "bar", "line".
+        Valid x_axis options: "channels", "products", "month".
+        Valid y_axis options: "revenue", "units".
+        Return ONLY the JSON, without markdown blocks.
+        
+        USER QUESTION: {user_prompt}
+        """
+
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing data..."):
+                try:
+                    # Send the request directly to the client
+                    response = send_message_to_gemini(st.session_state.gemini_client, full_prompt)
+                    raw_text = response.text.strip()
+                    
+                    try:
+                        clean_json_str = raw_text.replace("```json", "").replace("```", "").strip()
+                        chart_config = json.loads(clean_json_str)
                         
-                        if not df.empty:
-                            st.success("Here is the data:")
-                            st.dataframe(df)
+                        if chart_config.get("is_chart"):
+                            new_key = f"chart_new_{len(st.session_state.messages)}"
+                            render_chart(df_grouped, chart_config, chart_key=new_key)
+                            
+                            st.session_state.messages.append({
+                                "role": "assistant", 
+                                "content": chart_config, 
+                                "is_chart": True
+                            })
                         else:
-                            st.info("Query ran successfully, but returned no data.")
-            except Exception as e:
-                st.error(f"SQL Execution Error: {e}")
+                            raise ValueError("Not a chart JSON")
+                            
+                    except (json.JSONDecodeError, ValueError):
+                        st.markdown(raw_text)
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": raw_text, 
+                            "is_chart": False
+                        })
+                        
+                except Exception as e:
+                    st.error(f"⚠️ Server issue: {e}")

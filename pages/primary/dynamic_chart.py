@@ -41,9 +41,13 @@ def load_data():
             df['sku_units'] = pd.to_numeric(df['sku_units'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
             df.rename(columns={'sku_units': 'units'}, inplace=True) # Rename for cleaner UI
 
-        # 2. Date Parsing
+        # 2. Date Parsing & 🛑 NEW: Year Extraction
         if 'order_date' in df.columns:
-             df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+            df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+            
+            # Automatically create a 'year' column if it doesn't exist
+            if 'year' not in df.columns:
+                df['year'] = df['order_date'].dt.year.fillna(0).astype(int).astype(str).replace('0', 'Unknown')
 
         return df
 
@@ -66,10 +70,19 @@ def page():
     # 🔍 FILTER SECTION
     # ==============================
     with st.expander("🔍 Filters", expanded=True):
-        col1, col2, col3, col4 = st.columns(4)
+        # 🛑 CHANGED: Added a 5th column for the Year filter
+        col_yr, col1, col2, col3, col4 = st.columns(5)
         
         filters = {}
         
+        # 🛑 NEW: 0. Year Filter
+        with col_yr:
+            if 'year' in df.columns:
+                # Sort years descending so the newest year is at the top
+                years = sorted([y for y in df['year'].unique() if y != 'Unknown'], reverse=True)
+                sel_years = st.multiselect("Year", years)
+                if sel_years: filters['year'] = sel_years
+
         # 1. Month Filter
         with col1:
             if 'month' in df.columns:
@@ -111,7 +124,7 @@ def page():
         st.warning("No data matches these filters.")
         return
 
-   # ==============================
+    # ==============================
     # ⚙️ CHART CONFIGURATION
     # ==============================
     st.divider()
@@ -119,12 +132,11 @@ def page():
     c1, c2, c3, c4 = st.columns(4)
     
     with c1:
-        # 🛑 CHANGED: Set index=1 to make "Column Cluster Chart" the default
         chart_type = st.selectbox("📊 Chart Type", ["Line Chart", "Column Cluster Chart"], index=1)
 
     with c2:
-        # X-Axis (Dimensions) - Month is naturally index 0
-        options_x = ['month', 'order_date', 'channels', 'state', 'products', 'distributor']
+        # X-Axis (Dimensions) - Added 'year' as an option here too!
+        options_x = ['month', 'year', 'order_date', 'channels', 'state', 'products', 'distributor']
         avail_x = [c for c in options_x if c in df.columns]
         x_axis = st.selectbox("X-Axis (Group By)", avail_x, index=0)
 
@@ -135,11 +147,10 @@ def page():
         y_axis = st.selectbox("Y-Axis (Value)", avail_y, index=0)
 
     with c4:
-        # Color (Breakdown)
-        options_color = ['None', 'channels', 'products', 'state', 'distributor']
+        # Color (Breakdown) - Added 'year' as an option here too!
+        options_color = ['None', 'channels', 'year', 'products', 'state', 'distributor']
         avail_color = ['None'] + [c for c in options_color if c in df.columns and c != 'None']
         
-        # 🛑 CHANGED: Automatically find 'channels' in the list and set it as the default split
         default_color_idx = avail_color.index('channels') if 'channels' in avail_color else 0
         color_col = st.selectbox("Color (Split By)", avail_color, index=default_color_idx)
 
@@ -148,7 +159,6 @@ def page():
     # ==============================
     
     # 1. Group Data
-    # We group by [X-Axis] AND [Color Column] (if selected)
     group_cols = [x_axis]
     if color_col != 'None':
         group_cols.append(color_col)
@@ -157,14 +167,23 @@ def page():
 
     # 2. Sort Data (Crucial for Charts)
     if x_axis == 'month':
-        # Custom sort for financial year months
         month_order = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March']
         df_grouped['sort_key'] = df_grouped[x_axis].apply(lambda x: month_order.index(x) if x in month_order else 99)
-        df_grouped = df_grouped.sort_values('sort_key').drop(columns=['sort_key'])
+        
+        # If splitting by year on a monthly chart, sort by year then month
+        if color_col == 'year' or 'year' in df_grouped.columns:
+             if 'year' in df_grouped.columns:
+                 df_grouped = df_grouped.sort_values(['year', 'sort_key']).drop(columns=['sort_key'])
+             else:
+                 df_grouped = df_grouped.sort_values('sort_key').drop(columns=['sort_key'])
+        else:
+            df_grouped = df_grouped.sort_values('sort_key').drop(columns=['sort_key'])
+
+    elif x_axis == 'year':
+        df_grouped = df_grouped.sort_values('year')
     elif x_axis == 'order_date':
         df_grouped = df_grouped.sort_values('order_date')
     else:
-        # Sort by value (Descending) so biggest bars are first
         df_grouped = df_grouped.sort_values(y_axis, ascending=False)
 
     # 3. Generate Chart
@@ -188,8 +207,8 @@ def page():
             x=x_axis, 
             y=y_axis, 
             color=color_arg,
-            barmode='group', # This makes it clustered side-by-side
-            text_auto='.2s', # Show values on bars
+            barmode='group', 
+            text_auto='.2s', 
             title=f"{y_axis.title()} by {x_axis.title()}",
             template="plotly_dark"
         )
