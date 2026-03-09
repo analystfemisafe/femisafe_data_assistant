@@ -122,7 +122,7 @@ with st.sidebar:
     
     if st.button("📉 T-1 Summary", use_container_width=True): st.session_state.nav_mode = "T-1"
     if st.button("🤖 Data Assistant", use_container_width=True): st.session_state.nav_mode = "Data Assistant"
-    if st.button("📦 Inventory Management", use_container_width=True): st.session_state.nav_mode = "Inventory" # 👈 NEW BUTTON
+    if st.button("📦 Inventory Management", use_container_width=True): st.session_state.nav_mode = "Inventory" 
     if st.button("⚙️ Admin Panel", use_container_width=True): st.session_state.nav_mode = "Admin Panel"
 
 mode = st.session_state.nav_mode
@@ -246,7 +246,6 @@ elif mode == "Inventory":
     inv_choice = st.sidebar.radio("Navigate", ["Current Inventory", "Goods Receiving (GRN)", "Create Consignment"])
     
     if inv_choice == "Current Inventory":
-        # 🛑 UPDATED: This now loads your live dashboard!
         from pages.inventory.current_inventory import page; page()
         
     elif inv_choice == "Goods Receiving (GRN)":
@@ -271,7 +270,7 @@ elif mode == "Admin Panel":
     # 3. SHOW LOGIN SCREEN (If locked)
     if not st.session_state.admin_unlocked:
         st.markdown("### 🛑 Restricted Area")
-        st.info("This panel allows deleting database records. Double-authentication required.")
+        st.info("This panel allows editing database records. Double-authentication required.")
         
         password_input = st.text_input("Enter Admin Password:", type="password")
         
@@ -300,7 +299,8 @@ elif mode == "Admin Panel":
                 try:
                     with engine.connect() as conn:
                         result = conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")).fetchall()
-                        return [row[0] for row in result if "femisafe" in row[0]] # Filter for your tables
+                        # We bring all tables now, not just ones with 'femisafe', so you can see 'inv_ledger', etc.
+                        return [row[0] for row in result] 
                 except Exception as e:
                     st.error(f"Error fetching tables: {e}")
                     return []
@@ -311,8 +311,8 @@ elif mode == "Admin Panel":
         if not all_tables:
             st.error("⚠️ No tables found in database!")
         else:
-            # 🗂️ FOUR TABS FOR COMPLETE CONTROL
-            tab1, tab2, tab3, tab4 = st.tabs(["📤 Smart Uploader", "🗑️ Data Cleaner", "⚡ SQL Editor", "🔧 Schema Fixer"])
+            # 🗂️ FIVE TABS FOR COMPLETE CONTROL (Visual Editor Added Here)
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Smart Uploader", "🗑️ Data Cleaner", "⚡ SQL Editor", "🔧 Schema Fixer", "🗂️ Visual Editor"])
 
             # =========================================================
             # TAB 1: SMART UPLOADER
@@ -335,9 +335,7 @@ elif mode == "Admin Panel":
                         else:
                             df = pd.read_excel(uploaded_file)
                         
-                        # ⚡ FIX: Remove accidental spaces from header names (Fixes "month " error)
                         df.columns = df.columns.str.strip()
-
                         df = df.loc[:, ~df.columns.duplicated()] # Init Dedupe
                         
                         clean_table_name = selected_table.lower()
@@ -401,14 +399,12 @@ elif mode == "Admin Panel":
                         
                         elif "flipkart" in clean_table_name:
                             df.columns = [str(c).strip().lower() for c in df.columns]
-                            # Auto-fix "Order Date" -> "order date"
                             pass
 
                         # ⚠️ FINAL PREP
                         df = df.loc[:, ~df.columns.duplicated()]
                         
                         for col in df.columns:
-                            # 🛠️ DATE FIX: Removed 'dayfirst=True' so YYYY-MM-DD is read correctly
                             if "date" in str(col).lower(): df[col] = pd.to_datetime(df[col], errors='coerce')
 
                         st.write(f"✅ Ready to upload {len(df)} rows. Columns: {list(df.columns)}")
@@ -436,7 +432,6 @@ elif mode == "Admin Panel":
                 if clean_table:
                     engine = get_db_engine()
                     with engine.connect() as conn:
-                        # Sort logic to find "latest" rows
                         sort_col = "none"
                         try:
                             query = text(f'SELECT * FROM "{clean_table}" ORDER BY id DESC LIMIT 20')
@@ -533,6 +528,68 @@ elif mode == "Admin Panel":
                                 conn.commit()
                                 st.success("✅ Fixed!")
                             except Exception as e: st.error(f"Error (likely already fixed): {e}")
+
+            # =========================================================
+            # TAB 5: THE NEW VISUAL TABLE EDITOR 🗂️
+            # =========================================================
+            with tab5:
+                st.subheader("🗂️ Live Database Editor")
+                st.markdown("Double-click any cell to edit. Add new rows at the bottom. Select a row and press `Delete` on your keyboard to remove it.")
+
+                selected_edit_table = st.selectbox("Select a table to edit:", all_tables, key="visual_edit_select")
+
+                if selected_edit_table:
+                    engine = get_db_engine()
+                    try:
+                        # Load data
+                        df_edit = pd.read_sql(f'SELECT * FROM "{selected_edit_table}" ORDER BY 1', engine)
+                        
+                        # Find the primary key column (Defaults to 'id' or the first column)
+                        pk_col = "id" if "id" in df_edit.columns else df_edit.columns[0]
+                        editor_key = f"editor_{selected_edit_table}"
+                        
+                        # The Interactive Component
+                        edited_df = st.data_editor(
+                            df_edit, 
+                            num_rows="dynamic",
+                            use_container_width=True,
+                            key=editor_key
+                        )
+
+                        # The Save Button
+                        if st.button(f"💾 Save Changes to {selected_edit_table}", type="primary"):
+                            changes = st.session_state[editor_key]
+                            try:
+                                with engine.begin() as conn:
+                                    # 1. Process Edits
+                                    for row_idx, edits in changes["edited_rows"].items():
+                                        pk_value = df_edit.iloc[row_idx][pk_col]
+                                        for col, new_val in edits.items():
+                                            query = text(f'UPDATE "{selected_edit_table}" SET "{col}" = :val WHERE "{pk_col}" = :pk')
+                                            conn.execute(query, {"val": new_val, "pk": str(pk_value)})
+                                    
+                                    # 2. Process Deletions
+                                    for row_idx in changes["deleted_rows"]:
+                                        pk_value = df_edit.iloc[row_idx][pk_col]
+                                        query = text(f'DELETE FROM "{selected_edit_table}" WHERE "{pk_col}" = :pk')
+                                        conn.execute(query, {"pk": str(pk_value)})
+                                        
+                                    # 3. Process Additions
+                                    for new_row in changes["added_rows"]:
+                                        cols = ", ".join([f'"{k}"' for k in new_row.keys()])
+                                        placeholders = ", ".join([f":{k}" for k in new_row.keys()])
+                                        query = text(f'INSERT INTO "{selected_edit_table}" ({cols}) VALUES ({placeholders})')
+                                        conn.execute(query, new_row)
+                                        
+                                st.success(f"🎉 Successfully synced all changes to `{selected_edit_table}`!")
+                                time.sleep(1)
+                                st.rerun()
+                                
+                            except Exception as e:
+                                st.error(f"⚠️ Database Error: {e}")
+                                
+                    except Exception as e:
+                        st.error(f"Cannot load table for editing: {e}")
 
 # =======================================================
 # 🚪 LOGOUT BUTTON (Rendered absolutely last in the sidebar)

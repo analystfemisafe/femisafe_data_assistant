@@ -4,7 +4,6 @@ numpy
 psycopg2-binary
 sqlalchemy
 plotly
-
 langchain==0.3.7
 langchain-core==0.3.30
 langchain-community==0.3.5
@@ -12,9 +11,9 @@ langchain-experimental==0.3.4
 langchain-openai==0.2.1
 ollama
 openai>=1.51.0
-langchain-openai
 langchain-google-genai
 groq
 extra-streamlit-components
 google-generativeai
 tenacity
+openpyxl
