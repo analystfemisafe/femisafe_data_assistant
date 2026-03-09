@@ -70,12 +70,11 @@ def page():
     # 🔍 FILTER SECTION
     # ==============================
     with st.expander("🔍 Filters", expanded=True):
-        # 🛑 CHANGED: Added a 5th column for the Year filter
         col_yr, col1, col2, col3, col4 = st.columns(5)
         
         filters = {}
         
-        # 🛑 NEW: 0. Year Filter
+        # 0. Year Filter
         with col_yr:
             if 'year' in df.columns:
                 # Sort years descending so the newest year is at the top
@@ -135,7 +134,7 @@ def page():
         chart_type = st.selectbox("📊 Chart Type", ["Line Chart", "Column Cluster Chart"], index=1)
 
     with c2:
-        # X-Axis (Dimensions) - Added 'year' as an option here too!
+        # X-Axis (Dimensions)
         options_x = ['month', 'year', 'order_date', 'channels', 'state', 'products', 'distributor']
         avail_x = [c for c in options_x if c in df.columns]
         x_axis = st.selectbox("X-Axis (Group By)", avail_x, index=0)
@@ -147,7 +146,7 @@ def page():
         y_axis = st.selectbox("Y-Axis (Value)", avail_y, index=0)
 
     with c4:
-        # Color (Breakdown) - Added 'year' as an option here too!
+        # Color (Breakdown)
         options_color = ['None', 'channels', 'year', 'products', 'state', 'distributor']
         avail_color = ['None'] + [c for c in options_color if c in df.columns and c != 'None']
         
@@ -157,6 +156,11 @@ def page():
     # ==============================
     # 📊 PROCESS & PLOT
     # ==============================
+    
+    # 🛑 THE FIX: Stop the app gracefully if X-Axis and Color are identical
+    if x_axis == color_col:
+        st.error(f"⚠️ You selected '{x_axis}' for both the X-Axis and the Color split. Please choose different options to generate the chart.")
+        st.stop()
     
     # 1. Group Data
     group_cols = [x_axis]
@@ -186,11 +190,10 @@ def page():
     else:
         df_grouped = df_grouped.sort_values(y_axis, ascending=False)
 
-   # 3. Generate Chart
+    # 3. Generate Chart
     color_arg = color_col if color_col != 'None' else None
     
-    # 🛑 THE FIX: Force Plotly to treat the X-Axis and Color columns as strict text categories. 
-    # This prevents it from treating years as math numbers and inventing decimals like 2024.5!
+    # Force Plotly to treat the X-Axis and Color columns as strict text categories
     df_grouped[x_axis] = df_grouped[x_axis].astype(str)
     if color_arg:
         df_grouped[color_arg] = df_grouped[color_arg].astype(str)

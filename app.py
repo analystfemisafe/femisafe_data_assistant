@@ -122,6 +122,7 @@ with st.sidebar:
     
     if st.button("📉 T-1 Summary", use_container_width=True): st.session_state.nav_mode = "T-1"
     if st.button("🤖 Data Assistant", use_container_width=True): st.session_state.nav_mode = "Data Assistant"
+    if st.button("📦 Inventory Management", use_container_width=True): st.session_state.nav_mode = "Inventory" # 👈 NEW BUTTON
     if st.button("⚙️ Admin Panel", use_container_width=True): st.session_state.nav_mode = "Admin Panel"
 
 mode = st.session_state.nav_mode
@@ -179,52 +180,80 @@ elif mode == "T-1":
 # SECONDARY DASHBOARDS
 # ------------------------------------------------------
 elif mode == "Secondary":
-    st.sidebar.subheader("Select Channel")
-    channel_choice = st.sidebar.radio("Channel", ["Amazon", "Blinkit", "Shopify", "Flipkart", "Swiggy"])
+    st.sidebar.subheader("Secondary Menu")
+    sec_nav = st.sidebar.radio("Navigate", ["Channel Reports", "Dynamic Table"])
     
-    if channel_choice == "Blinkit":
-        report_options = ["Sales Dashboard", "Productwise Performance", "Citywise Performance", "Ad Spend Report", "Organic Share", "Aging Report", "Weekly Sales Analysis"]
-    elif channel_choice == "Amazon":
-        report_options = ["Sales Dashboard", "Productwise Sales", "Ad Spend Report", "Organic Share"]
-    elif channel_choice == "Shopify":
-        report_options = ["Sales Dashboard", "Ad Report"]
-    elif channel_choice == "Swiggy":
-        report_options = ["Sales Dashboard", "Ad Report"]
-    elif channel_choice == "Flipkart":
-        report_options = ["Sales Dashboard", "Ad Report"]
-    else: report_options = ["Sales Dashboard"]
+    st.sidebar.markdown("---")
+    
+    # 🛑 NEW: Route to Dynamic Table if selected
+    if sec_nav == "Dynamic Table":
+        from pages.secondary.dynamic_table import page; page()
+        
+    # 🏪 EXISTING: Route to specific channel dashboards
+    else:
+        st.sidebar.subheader("Select Channel")
+        channel_choice = st.sidebar.radio("Channel", ["Amazon", "Blinkit", "Shopify", "Flipkart", "Swiggy"])
+        
+        if channel_choice == "Blinkit":
+            report_options = ["Sales Dashboard", "Productwise Performance", "Citywise Performance", "Ad Spend Report", "Organic Share", "Aging Report", "Weekly Sales Analysis"]
+        elif channel_choice == "Amazon":
+            report_options = ["Sales Dashboard", "Productwise Sales", "Ad Spend Report", "Organic Share"]
+        elif channel_choice == "Shopify":
+            report_options = ["Sales Dashboard", "Ad Report"]
+        elif channel_choice == "Swiggy":
+            report_options = ["Sales Dashboard", "Ad Report"]
+        elif channel_choice == "Flipkart":
+            report_options = ["Sales Dashboard", "Ad Report"]
+        else: report_options = ["Sales Dashboard"]
 
-    report_choice = st.sidebar.selectbox("Select Report", report_options)
+        report_choice = st.sidebar.selectbox("Select Report", report_options)
 
-    if channel_choice == "Amazon":
-        if report_choice == "Sales Dashboard": from pages.secondary.amazon.sales_dashboard import page; page()
-        elif report_choice == "Productwise Sales": from pages.secondary.amazon.productwise_sales import page; page()
-        elif report_choice == "Ad Spend Report": from pages.secondary.amazon.ad_spend_report import page; page()
-        elif report_choice == "Organic Share": from pages.secondary.amazon.organic_share import page; page()
-    elif channel_choice == "Blinkit":
-        if report_choice == "Sales Dashboard": from pages.secondary.blinkit.blinkit_sales_dashboard import page; page()
-        elif report_choice == "Productwise Performance": from pages.secondary.blinkit.blinkit_productwise_performance import page; page()
-        elif report_choice == "Citywise Performance": from pages.secondary.blinkit.blinkit_citywise_performance import page; page()
-        elif report_choice == "Ad Spend Report": from pages.secondary.blinkit.blinkit_ad_spend_report import page; page()
-        elif report_choice == "Organic Share": from pages.secondary.blinkit.blinkit_organic_share import page; page()
-        elif report_choice == "Aging Report": from pages.secondary.blinkit.blinkit_aging_report import page; page()
-        elif report_choice == "Weekly Sales Analysis": from pages.secondary.blinkit.blinkit_weekly_sales_analysis import page; page()
-    elif channel_choice == "Shopify":
-        if report_choice == "Sales Dashboard": from pages.secondary.shopify.sales_dashboard import page; page()
-        else: 
-            try: from pages.secondary.shopify.ad_report import page; page()
-            except: st.write("Page under construction")
-    elif channel_choice == "Flipkart":
-        if report_choice == "Sales Dashboard": from pages.secondary.flipkart.sales_dashboard import page; page()
-        else: 
-            try: from pages.secondary.flipkart.ad_report import page; page()
-            except: st.write("Page under construction")
-    elif channel_choice == "Swiggy":
-        if report_choice == "Sales Dashboard": from pages.secondary.swiggy.sales_dashboard import page; page()
-        elif report_choice == "Ad Report": from pages.secondary.swiggy.ad_spend_report import page; page()
+        if channel_choice == "Amazon":
+            if report_choice == "Sales Dashboard": from pages.secondary.amazon.sales_dashboard import page; page()
+            elif report_choice == "Productwise Sales": from pages.secondary.amazon.productwise_sales import page; page()
+            elif report_choice == "Ad Spend Report": from pages.secondary.amazon.ad_spend_report import page; page()
+            elif report_choice == "Organic Share": from pages.secondary.amazon.organic_share import page; page()
+        elif channel_choice == "Blinkit":
+            if report_choice == "Sales Dashboard": from pages.secondary.blinkit.blinkit_sales_dashboard import page; page()
+            elif report_choice == "Productwise Performance": from pages.secondary.blinkit.blinkit_productwise_performance import page; page()
+            elif report_choice == "Citywise Performance": from pages.secondary.blinkit.blinkit_citywise_performance import page; page()
+            elif report_choice == "Ad Spend Report": from pages.secondary.blinkit.blinkit_ad_spend_report import page; page()
+            elif report_choice == "Organic Share": from pages.secondary.blinkit.blinkit_organic_share import page; page()
+            elif report_choice == "Aging Report": from pages.secondary.blinkit.blinkit_aging_report import page; page()
+            elif report_choice == "Weekly Sales Analysis": from pages.secondary.blinkit.blinkit_weekly_sales_analysis import page; page()
+        elif channel_choice == "Shopify":
+            if report_choice == "Sales Dashboard": from pages.secondary.shopify.sales_dashboard import page; page()
+            else: 
+                try: from pages.secondary.shopify.ad_report import page; page()
+                except: st.write("Page under construction")
+        elif channel_choice == "Flipkart":
+            if report_choice == "Sales Dashboard": from pages.secondary.flipkart.sales_dashboard import page; page()
+            else: 
+                try: from pages.secondary.flipkart.ad_report import page; page()
+                except: st.write("Page under construction")
+        elif channel_choice == "Swiggy":
+            if report_choice == "Sales Dashboard": from pages.secondary.swiggy.sales_dashboard import page; page()
+            elif report_choice == "Ad Report": from pages.secondary.swiggy.ad_spend_report import page; page()
 
 elif mode == "Data Assistant":
     from pages.data_assistant.data_assistant import page; page()
+    
+# ------------------------------------------------------
+# 📦 INVENTORY MANAGEMENT
+# ------------------------------------------------------
+elif mode == "Inventory":
+    st.sidebar.subheader("Inventory Menu")
+    inv_choice = st.sidebar.radio("Navigate", ["Current Inventory", "Goods Receiving (GRN)", "Create Consignment"])
+    
+    if inv_choice == "Current Inventory":
+        # 🛑 UPDATED: This now loads your live dashboard!
+        from pages.inventory.current_inventory import page; page()
+        
+    elif inv_choice == "Goods Receiving (GRN)":
+        from pages.inventory.grn import page; page()
+        
+    elif inv_choice == "Create Consignment":
+        from pages.inventory.consignment import page; page()   
 
 # ------------------------------------------------------
 # 5. SUPER ADMIN PANEL (SECURE LOCK 🔒)

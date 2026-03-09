@@ -138,31 +138,41 @@ def page():
     # 4. DYNAMIC CHART SECTION
     # ---------------------------------------------------------
     
+    # Calculate the starting year of the Financial Year for every row
+    # If the month is before April (< 4), it belongs to the previous year's FY
+    df_chart = df.copy()
+    df_chart['fy_start'] = df_chart['order_date'].dt.year - (df_chart['order_date'].dt.month < 4).astype(int)
+
     # A. View Selection
     view_mode = st.radio(
         "📅 Select Time Range", 
-        ["Financial Year (Current)", "All Time (Lifetime)", "Quarterly View"], 
+        ["Financial Year", "All Time (Lifetime)", "Quarterly View"], 
         horizontal=True
     )
 
-    # B. Filter & Grouping Logic
-    df_chart = df.copy()
     chart_title = ""
-    x_label_col = 'label'
 
-    # Logic for Financial Year
-    if view_mode == "Financial Year (Current)":
-        if latest_date.month >= 4:
-            fy_start_year = latest_date.year
-        else:
-            fy_start_year = latest_date.year - 1
+    # Logic for Financial Year (Now Dynamic!)
+    if view_mode == "Financial Year":
+        # Get a list of all unique financial years in the data
+        available_fys = sorted(df_chart['fy_start'].unique(), reverse=True)
         
-        start_date = pd.Timestamp(year=fy_start_year, month=4, day=1)
-        df_chart = df_chart[df_chart['order_date'] >= start_date]
+        # Create user-friendly labels (e.g., "FY 2024-2025")
+        fy_labels = {y: f"FY {y}-{y+1}" for y in available_fys}
+        
+        # Show dropdown menu for selection
+        selected_fy_start = st.selectbox(
+            "Select Financial Year", 
+            options=available_fys, 
+            format_func=lambda x: fy_labels[x]
+        )
+        
+        # Filter the data to only include the selected financial year
+        df_chart = df_chart[df_chart['fy_start'] == selected_fy_start]
         
         # Group by Month (YYYY-MM)
         df_chart['sort_key'] = df_chart['order_date'].dt.to_period('M')
-        chart_title = f"Sales Trend (FY {fy_start_year}-{fy_start_year+1})"
+        chart_title = f"Sales Trend ({fy_labels[selected_fy_start]})"
 
     # Logic for All Time
     elif view_mode == "All Time (Lifetime)":
