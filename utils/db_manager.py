@@ -14,15 +14,12 @@ def get_db_engine():
     This prevents opening new connections on every button click.
     """
     try:
-        # 1. Try Local Secrets
-        try:
-            db_url = st.secrets["postgres"]["url"]
-        except (FileNotFoundError, KeyError):
-            # 2. Try Cloud Environment Variable
-            db_url = os.environ.get("DATABASE_URL")
+        # 🛑 COMPLETELY REMOVED st.secrets TO FIX RAILWAY ERROR
+        # Exclusively use the Cloud Environment Variable
+        db_url = os.environ.get("DATABASE_URL")
         
         if not db_url:
-            st.error("❌ Database URL not found. Check secrets.toml or Render Environment Variables.")
+            st.error("❌ Database URL not found. Check Railway Environment Variables.")
             return None
 
         # Create engine with connection pooling settings
@@ -32,7 +29,7 @@ def get_db_engine():
             max_overflow=10,    
             pool_timeout=30,    
             pool_recycle=1800,
-            # ⬇️ CRITICAL FIX FOR SUPABASE TRANSACTION MODE (Port 6543)
+            # ⬇️ CRITICAL FIX FOR POOLED TRANSACTION MODE
             # This disables prepared statements, which prevents errors with the pooler.
             connect_args={"prepare_threshold": None} 
         )
