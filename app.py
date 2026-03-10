@@ -320,8 +320,8 @@ elif mode == "Admin Panel":
         if not all_tables:
             st.error("⚠️ No tables found in database!")
         else:
-            # 🗂️ FIVE TABS FOR COMPLETE CONTROL (Visual Editor Added Here)
-            tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Smart Uploader", "🗑️ Data Cleaner", "⚡ SQL Editor", "🔧 Schema Fixer", "🗂️ Visual Editor"])
+            # 🗂️ SIX TABS FOR COMPLETE CONTROL (Downloader Added Here)
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📤 Smart Uploader", "🗑️ Data Cleaner", "⚡ SQL Editor", "🔧 Schema Fixer", "🗂️ Visual Editor", "📥 Downloader"])
 
             # =========================================================
             # TAB 1: SMART UPLOADER
@@ -599,6 +599,43 @@ elif mode == "Admin Panel":
                                 
                     except Exception as e:
                         st.error(f"Cannot load table for editing: {e}")
+
+            # =========================================================
+            # TAB 6: DATA DOWNLOADER 📥
+            # =========================================================
+            with tab6:
+                st.subheader("📥 Export Raw Database Tables")
+                st.write("Select a table below to download its entire contents as a CSV file.")
+                
+                download_table = st.selectbox("Select Table to Export:", all_tables, key="dl_table_select")
+                
+                if download_table:
+                    # Use a fetch button first so we don't accidentally freeze the app by auto-loading a massive table
+                    if st.button(f"Fetch Data for `{download_table}`"):
+                        with st.spinner("Fetching data from server..."):
+                            engine = get_db_engine()
+                            try:
+                                # Fetch the entire table
+                                df_download = pd.read_sql(f'SELECT * FROM "{download_table}"', engine)
+                                
+                                if not df_download.empty:
+                                    # Convert to CSV format
+                                    csv = df_download.to_csv(index=False).encode('utf-8')
+                                    
+                                    st.success(f"✅ Successfully fetched {len(df_download)} rows!")
+                                    
+                                    # Show the actual Download Button
+                                    st.download_button(
+                                        label="💾 Download CSV File",
+                                        data=csv,
+                                        file_name=f"{download_table}_export_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
+                                        mime="text/csv",
+                                        type="primary"
+                                    )
+                                else:
+                                    st.warning(f"⚠️ The table `{download_table}` is currently empty.")
+                            except Exception as e:
+                                st.error(f"❌ Error fetching table data: {e}")
 
 # =======================================================
 # 🚪 LOGOUT BUTTON (Rendered absolutely last in the sidebar)
