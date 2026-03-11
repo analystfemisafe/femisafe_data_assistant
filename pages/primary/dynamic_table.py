@@ -52,20 +52,24 @@ def load_data():
                 errors='coerce'
             ).fillna(0)
 
+        # 3. Fast Date Parsing (Moved above category optimization to extract Year safely)
+        if 'order_date' in df.columns:
+             df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
+             # 👇 NEW: Automatically extract 'year' from order_date if it isn't in the database
+             if 'year' not in df.columns:
+                 df['year'] = df['order_date'].dt.year.astype('Int64').astype(str).replace('<NA>', 'Unknown')
+
         # 2. Optimize Text to Category (Instant Filtering & Grouping)
         # Identify columns that are likely categorical (low cardinality)
+        # 👇 NEW: Added 'year' to categorical columns
         cat_cols = [
-            'month', 'channels', 'distributor', 'fulfilment_type', 
+            'year', 'month', 'channels', 'distributor', 'fulfilment_type', 
             'state', 'city', 'products', 'categories', 'sku'
         ]
         
         for col in cat_cols:
             if col in df.columns:
                 df[col] = df[col].fillna("Unknown").astype(str).str.strip().astype('category')
-        
-        # 3. Fast Date Parsing
-        if 'order_date' in df.columns:
-             df['order_date'] = pd.to_datetime(df['order_date'], dayfirst=True, errors='coerce')
 
         return df
 
@@ -93,7 +97,8 @@ def page():
     # ==============================
     with st.expander("🔍 Filters", expanded=True):
         # Define filter columns
-        possible_cols = ['month', 'channels', 'distributor', 'fulfilment_type', 'state', 'city', 'products']
+        # 👇 NEW: Added 'year' to the front of the possible filters list
+        possible_cols = ['year', 'month', 'channels', 'distributor', 'fulfilment_type', 'state', 'city', 'products']
         filter_cols = [col for col in possible_cols if col in df.columns]
 
         filters = {}
@@ -119,7 +124,8 @@ def page():
     
     with col1:
         # Row Dimensions
-        possible_rows = ['order_date', 'month', 'channels', 'distributor', 'fulfilment_type', 'categories', 'products', 'sku', 'state', 'city']
+        # 👇 NEW: Added 'year' to possible group-by rows
+        possible_rows = ['order_date', 'year', 'month', 'channels', 'distributor', 'fulfilment_type', 'categories', 'products', 'sku', 'state', 'city']
         avail_rows = [c for c in possible_rows if c in df.columns]
         row_dims = st.multiselect("Group By (Rows)", avail_rows, default=['month'])
 
@@ -132,7 +138,7 @@ def page():
     with col3:
         # Aggregation Type
         agg_choice = st.selectbox("Aggregation Type", ["sum", "mean", "max", "min"])
-        # 👇 NEW: Grand Total Checkbox
+        # Grand Total Checkbox
         show_total = st.checkbox("Show Grand Total Row", value=True)
 
     # ==============================
@@ -145,7 +151,7 @@ def page():
         return
 
     # 1. Group & Aggregate
-    # 🛑 THE FIX: observed=True forces Pandas to only show categories present in the filtered data!
+    # observed=True forces Pandas to only show categories present in the filtered data!
     try:
         pivot_table = filtered_df.groupby(row_dims, observed=True)[selected_values].agg(agg_choice).reset_index()
     except TypeError:
