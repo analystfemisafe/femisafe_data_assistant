@@ -160,7 +160,8 @@ def page():
 
     # 1. Group & Aggregate
     try:
-        pivot_table = filtered_df.groupby(row_dims, observed=False)[selected_values].agg(agg_choice).reset_index()
+        # 🛑 THE FIX: Set observed=True to hide empty categories
+        pivot_table = filtered_df.groupby(row_dims, observed=True)[selected_values].agg(agg_choice).reset_index()
     except TypeError:
         st.error("Error aggregating data. Ensure selected values are numeric.")
         return
