@@ -145,9 +145,9 @@ def page():
         return
 
     # 1. Group & Aggregate
-    # observed=True makes it faster for categorical data
+    # 🛑 THE FIX: observed=True forces Pandas to only show categories present in the filtered data!
     try:
-        pivot_table = filtered_df.groupby(row_dims, observed=False)[selected_values].agg(agg_choice).reset_index()
+        pivot_table = filtered_df.groupby(row_dims, observed=True)[selected_values].agg(agg_choice).reset_index()
     except TypeError:
         st.error("Error aggregating data. Ensure selected values are numeric.")
         return
@@ -181,19 +181,10 @@ def page():
         height=500
     )
 
-    # 4. Download
+    # 4. Download (Cleaned up duplicates)
     st.download_button(
         "⬇️ Download Table as CSV",
         data=pivot_table.to_csv(index=False).encode("utf-8"),
-        file_name="dynamic_pivot_with_total.csv",
-        mime="text/csv"
-    )
-    # ==============================
-    # 📥 Excel Export
-    # ==============================
-    st.download_button(
-        "⬇️ Download Table as CSV",
-        data=pivot_table.to_csv(index=False).encode("utf-8"),
-        file_name="dynamic_pivot.csv",
+        file_name="dynamic_pivot_table.csv",
         mime="text/csv"
     )
